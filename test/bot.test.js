@@ -217,7 +217,9 @@ test('setup asks for building then locality; at least one is required', async ()
   assert.match(await w.say(AYESHA, 'skip'), /at least your locality/);
   // A tapped button mid-setup doesn't become a locality.
   assert.match(await w.say(AYESHA, '', { payload: 'accept:3' }), /finish setting you up/);
-  assert.match(await w.say(AYESHA, 'Saket'), /All set! Neighbours will see you as \*Ayesha \(Saket\)\*/);
+  const done = await w.say(AYESHA, 'Saket');
+  assert.match(done, /All set! Neighbours will see you as \*Ayesha \(Saket\)\*/);
+  assert.match(done, /https:\/\/books\.example\.org\/#login=/); // new members get a website link too
   assert.equal(w.store.memberByPhone(AYESHA).locality, 'Saket');
   assert.match(await w.say(AYESHA, 'add Dune'), /Added 1 book/);
 

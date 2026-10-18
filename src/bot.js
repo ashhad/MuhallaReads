@@ -105,10 +105,14 @@ export function createBot({ store, library, notifier, enrichAll, identifyBooks, 
     if (locality) store.setPlace(member.id, { building: member.building, locality });
     setupStep.delete(member.id);
     const me = store.memberById(member.id);
+    const website = settings.publicUrl
+      ? `\n\n🌐 Or use the website (link works once, for 15 minutes):\n${settings.publicUrl}/#login=${store.createLoginCode(me.id)}`
+      : '';
     return reply(
       `✅ All set! Neighbours will see you as *${who(me)}*.\n` +
         'Change it any time with `name …`, `building …` or `locality …`.\n\n' +
-        'Now type a book title to search, or `add <title>` to share one of yours. Send *help* for everything else.',
+        'Now type a book title to search, or `add <title>` to share one of yours. Send *help* for everything else.' +
+        website,
     );
   }
 
