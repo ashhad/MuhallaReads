@@ -1,0 +1,24 @@
+[Unit]
+Description=MuhallaReads community library
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=muhallareads
+Group=muhallareads
+WorkingDirectory=/opt/muhallareads
+EnvironmentFile=/etc/muhallareads/muhallareads.env
+Environment=NODE_ENV=production HOST=127.0.0.1
+ExecStart=/usr/bin/node --disable-warning=ExperimentalWarning src/server.js
+Restart=always
+RestartSec=5
+
+# Sandboxing: the app can only write to its data directory.
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/lib/muhallareads
+
+[Install]
+WantedBy=multi-user.target

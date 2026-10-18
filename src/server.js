@@ -156,7 +156,7 @@ export function createApp({ store, deps = {}, settings = config } = {}) {
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   const store = openDb(config.dbPath);
-  createApp({ store }).listen(config.port, () => {
+  createApp({ store }).listen(config.port, config.host, () => {
     console.log(`📚 ${config.communityName} running on http://localhost:${config.port}`);
     console.log(`   Photo scanning: ${visionEnabled() ? 'on' : 'off (set ANTHROPIC_API_KEY)'}`);
     console.log(`   WhatsApp Cloud API: ${config.whatsapp.token ? 'on' : 'off'} · Twilio: ${config.twilio.authToken ? 'on' : 'off'}`);

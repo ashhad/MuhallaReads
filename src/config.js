@@ -4,6 +4,8 @@ const env = process.env;
 
 export const config = {
   port: Number(env.PORT || 3000),
+  // Set to 127.0.0.1 when a reverse proxy (e.g. Caddy) sits in front, so the app isn't exposed directly.
+  host: env.HOST || undefined,
   communityName: env.COMMUNITY_NAME || 'MuhallaReads',
   // Optional shared code people must enter to join. Leave empty for an open catalogue.
   joinCode: (env.JOIN_CODE || '').trim(),

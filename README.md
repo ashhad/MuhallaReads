@@ -50,8 +50,11 @@ HTTPS.
 
 ### Deploy
 
-Any host that runs Node or Docker and keeps a persistent disk works, for example Railway,
-Render, Fly.io, or a small VPS.
+**Free option:** [Oracle Cloud Always Free VM](docs/deploy-oracle.md). A step-by-step guide and a
+one-command setup script (`deploy/oracle/setup.sh`) cover HTTPS, auto-restart and daily backups.
+
+Any other host that runs Node or Docker and keeps a persistent disk also works, for example
+Railway, Render (paid plan with a disk), Fly.io, or a small VPS.
 
 ```bash
 docker build -t muhallareads .

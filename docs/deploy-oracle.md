@@ -1,0 +1,174 @@
+# Free hosting on Oracle Cloud
+
+This guide puts MuhallaReads on an Oracle Cloud **Always Free** virtual machine, with free HTTPS
+and a free web address. Allow about 30–45 minutes the first time.
+
+You'll end up with:
+
+- the app at `https://yourname.duckdns.org`
+- HTTPS certificates that renew themselves (via [Caddy](https://caddyserver.com))
+- the app restarting by itself after crashes or reboots
+- a daily backup of the catalogue
+
+## 1. Create the virtual machine
+
+In the Oracle Cloud console: **☰ → Compute → Instances → Create instance**.
+
+| Setting | Choose |
+|---|---|
+| Name | `muhallareads` |
+| Image | **Canonical Ubuntu 24.04** (click *Change image*). Not Oracle Linux: the setup script needs Ubuntu. |
+| Shape | **Ampere → VM.Standard.A1.Flex**, 1 OCPU and 6 GB memory. If you get "Out of capacity", try another *availability domain*, or use **AMD → VM.Standard.E2.1.Micro**. Both are labelled *Always Free-eligible*. |
+| Networking | Create a new virtual cloud network and public subnet (the defaults), with **Assign a public IPv4 address** on |
+| SSH keys | **Generate a key pair for me** → **Save private key**. Keep this file safe: it's how you log in. |
+
+Click **Create**. When the instance is *Running*, copy its **Public IP address**.
+
+Free resources only exist in your account's *home region* (e.g. Mumbai or Hyderabad), so create
+the VM there.
+
+## 2. Open the web ports in Oracle's firewall
+
+Oracle blocks web traffic by default. On the instance page, click the **subnet** link, then
+**Security → Security Lists → Default Security List → Add Ingress Rules**:
+
+- Source CIDR: `0.0.0.0/0`
+- IP Protocol: `TCP`
+- Destination Port Range: `80,443`
+
+Save. (The VM also has its own firewall. The setup script opens that one for you.)
+
+## 3. Get a free web address
+
+1. Go to <https://www.duckdns.org> and sign in (Google or GitHub).
+2. Type a subdomain, e.g. `ourmuhallabooks`, and click **add domain**.
+3. In the **current ip** box, paste the VM's public IP and click **update ip**.
+
+Your address is now `ourmuhallabooks.duckdns.org`. If you already own a domain, add an `A` record
+pointing to the VM's IP instead.
+
+## 4. Log in to the VM
+
+From a terminal: on Windows, use PowerShell; on a Mac, the Terminal app.
+
+```bash
+ssh -i path/to/ssh-key.key ubuntu@YOUR_VM_IP
+```
+
+On Mac or Linux, if ssh complains about permissions, run `chmod 600 path/to/ssh-key.key` first.
+On Windows, keep the key in your user folder (e.g. `C:\Users\you\.ssh\`).
+
+## 5. Download the code
+
+**If the GitHub repo is public:**
+
+```bash
+git clone https://github.com/ashhad/MuhallaReads.git
+```
+
+**If it's private**, give the VM a read-only *deploy key*:
+
+```bash
+ssh-keygen -t ed25519 -N "" -f ~/.ssh/id_ed25519
+cat ~/.ssh/id_ed25519.pub
+```
+
+Copy the line it prints. On GitHub go to **repo → Settings → Deploy keys → Add deploy key**, paste
+it, and leave *Allow write access* off. Then:
+
+```bash
+git clone git@github.com:ashhad/MuhallaReads.git
+```
+
+## 6. Run the setup script
+
+Use your own address in place of the example:
+
+```bash
+cd MuhallaReads
+sudo bash deploy/oracle/setup.sh ourmuhallabooks.duckdns.org
+```
+
+It takes a few minutes. When it prints **✅ MuhallaReads is running**, open
+`https://ourmuhallabooks.duckdns.org` on your phone. The first visit can take up to a minute
+while the HTTPS certificate is issued.
+
+## 7. Settings
+
+```bash
+sudo nano /etc/muhallareads/muhallareads.env
+```
+
+The values most people set:
+
+```
+COMMUNITY_NAME=Our Muhalla Library
+JOIN_CODE=books2026
+ANTHROPIC_API_KEY=sk-ant-...
+```
+
+`JOIN_CODE` is what neighbours enter to join, so share it in your group. `ANTHROPIC_API_KEY` is
+optional and turns on shelf-photo scanning. Don't add comments after a value on the same line:
+they would become part of the value.
+
+Save with `Ctrl+O`, Enter, `Ctrl+X`. Then restart the app:
+
+```bash
+sudo systemctl restart muhallareads
+```
+
+For WhatsApp, follow **WhatsApp setup** in the README. Your webhook URL is
+`https://ourmuhallabooks.duckdns.org/webhooks/whatsapp`. The setup script already generated a
+`WHATSAPP_VERIFY_TOKEN` in the settings file: copy that value into Meta's webhook form.
+
+## Everyday tasks
+
+| Task | Command (on the VM) |
+|---|---|
+| Update to the latest code | `cd ~/MuhallaReads && git pull && sudo bash deploy/oracle/setup.sh` |
+| See what the app is doing | `journalctl -u muhallareads -f` (Ctrl+C to stop) |
+| Restart | `sudo systemctl restart muhallareads` |
+| List backups | `ls /var/backups/muhallareads` |
+
+**Copy a backup to your laptop** once in a while. Backups on the VM don't help if the VM itself
+is lost. Run this on your laptop:
+
+```bash
+scp -i path/to/ssh-key.key "ubuntu@YOUR_VM_IP:/var/backups/muhallareads/*.db" .
+```
+
+**Restore a backup** (on the VM):
+
+```bash
+sudo systemctl stop muhallareads
+sudo cp /var/backups/muhallareads/muhallareads-2026-10-18.db /var/lib/muhallareads/muhallareads.db
+sudo rm -f /var/lib/muhallareads/muhallareads.db-wal /var/lib/muhallareads/muhallareads.db-shm
+sudo chown muhallareads:muhallareads /var/lib/muhallareads/muhallareads.db
+sudo systemctl start muhallareads
+```
+
+## Keeping it free
+
+- **The VM** costs nothing while you stay within Always Free limits. Oracle may *reclaim* Always
+  Free VMs that sit nearly idle for a week. A small community app is mostly idle, so this can
+  happen. To prevent it, upgrade the account to **Pay As You Go** (Billing → Upgrade). You still
+  pay nothing for Always Free resources. Also set a **budget alert** (Billing → Budgets) at, say,
+  ₹100, so any accidental charge emails you. Either way, keep a backup copy on your laptop.
+- **WhatsApp:** with Meta's Cloud API, replies to messages people send the bot are free at the
+  time of writing (check Meta's current pricing page). Twilio charges for every message, so Meta
+  is the cheaper choice.
+- **Photo scanning** is the only part that costs money. Each photo is one Claude API call. With
+  the default model that's roughly a few rupees per photo (a rough estimate; check Anthropic's
+  pricing page). To make it much cheaper, set `CLAUDE_MODEL=claude-haiku-5-5` (it may miss more
+  titles on busy shelves). To turn it off, leave `ANTHROPIC_API_KEY` empty. Typing and barcode
+  scanning are always free.
+
+## Troubleshooting
+
+| Problem | Check |
+|---|---|
+| Site doesn't load at all | The ingress rule from step 2 exists; `ping yourname.duckdns.org` shows the VM's IP |
+| Browser says the certificate is invalid | Wait a minute after DNS points to the VM, then `journalctl -u caddy -n 50` |
+| "Something went wrong" in the app | `journalctl -u muhallareads -n 50` |
+| Setup fails during `npm ci` on the Micro VM | Run the script again: it adds swap memory first, which usually fixes it |
+| Camera doesn't open | The app must be opened over `https://`, and the browser must be allowed to use the camera |
