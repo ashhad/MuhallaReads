@@ -12,20 +12,18 @@ export function createNotifier({ store, transport, settings, clock = () => new D
   const windowOpen = (member) =>
     Boolean(member.last_inbound_at) && clock() - new Date(member.last_inbound_at) < WINDOW_MS;
 
-  async function sendNow(member, { text, buttons, requestId, relay }) {
-    const id = await transport.send(member.phone, { text, buttons });
+  async function sendNow(member, { text, link }) {
+    await transport.send(member.phone, { text, link });
     store.bumpUsage('service');
-    if (relay && id && requestId) store.recordOutbound(id, member.id, requestId);
   }
 
   /**
    * @param {number} memberId
    * @param {object} n
    * @param {string} n.text full message
-   * @param {{id: string, title: string}[]} [n.buttons]
+   * @param {{url: string, label: string}} [n.link] button that opens the web app
    * @param {number} [n.requestId]
-   * @param {boolean} [n.relay] a chat message: remember its id so swipe-replies route back
-   * @param {{name: string, params: string[], buttons?: string[]}} [n.template] nudge when the window is closed
+   * @param {{name: string, params: string[], url?: string}} [n.template] nudge when the window is closed
    * @param {boolean} [n.optional] only send if it's free right now; otherwise drop it
    * @returns {Promise<'sent'|'template'|'queued'|'dropped'>}
    */
@@ -44,7 +42,7 @@ export function createNotifier({ store, transport, settings, clock = () => new D
     if (n.optional) return 'dropped';
 
     const alreadyNudged = store.pendingInbox(member.id).length > 0;
-    store.addInbox(member.id, { text: n.text, buttons: n.buttons, requestId: n.requestId, relay: n.relay });
+    store.addInbox(member.id, { text: n.text, link: n.link, requestId: n.requestId });
     if (!transport || !n.template || alreadyNudged || !settings.templatesEnabled) return 'queued';
     if (store.usageFor().templates >= settings.monthlyTemplateLimit) {
       console.warn('Monthly WhatsApp template budget reached; notification queued.');
@@ -74,12 +72,7 @@ export function createNotifier({ store, transport, settings, clock = () => new D
     const toSend = items.filter((i) => !skipRequestId || i.request_id !== skipRequestId).slice(-10);
     for (const item of toSend) {
       try {
-        await sendNow(member, {
-          text: item.text,
-          buttons: item.buttons,
-          requestId: item.request_id,
-          relay: Boolean(item.relay),
-        });
+        await sendNow(member, { text: item.text, link: item.link });
       } catch (err) {
         console.error('WhatsApp send failed while delivering queued messages:', err.message);
       }

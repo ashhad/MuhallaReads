@@ -126,6 +126,11 @@ async function boot() {
       state.me = null;
     }
   }
+  // Links from WhatsApp notifications look like /?request=7 or /?q=Dune. Remember them across sign-in.
+  if (location.search) {
+    store.set('pendingLink', location.search);
+    history.replaceState(null, '', location.pathname);
+  }
   state.me ? showApp() : signedOut();
 }
 
@@ -142,9 +147,34 @@ function showApp() {
   $('#signin').hidden = true;
   $('#app').hidden = false;
   renderMe();
-  showView('find');
   refreshRequests();
-  if (!state.me.place) editProfile({ required: true });
+  if (!state.me.place) {
+    showView('find');
+    editProfile({ required: true });
+    return;
+  }
+  openPendingLink();
+}
+
+/** Opens the page a notification pointed to, if any. */
+async function openPendingLink() {
+  const params = new URLSearchParams(store.get('pendingLink') || '');
+  store.set('pendingLink', null);
+  const request = Number(params.get('request'));
+  const q = params.get('q');
+  if (q) {
+    $('#search').value = q;
+    return showView('find');
+  }
+  if (!request && params.get('open') !== 'requests') return showView('find');
+  await showView('requests');
+  const r = state.requests.find((x) => x.id === request);
+  if (r?.status === 'accepted') return openThread(r.id);
+  const card = request && document.querySelector(`[data-request="${request}"]`);
+  if (card) {
+    card.scrollIntoView({ block: 'center' });
+    card.classList.add('flash');
+  }
 }
 
 function renderMe() {
@@ -162,6 +192,7 @@ function editProfile({ required = false } = {}) {
   f.querySelector('.error').textContent = '';
   $('#profile-title').textContent = required ? 'One last step' : 'About you';
   $('#profile-cancel').hidden = required;
+  state.profileRequired = required;
   d.oncancel = (e) => required && e.preventDefault(); // Esc can't skip a required setup
   d.showModal();
 }
@@ -182,7 +213,8 @@ $('#profile-form').addEventListener('submit', async (e) => {
     state.me = (await api('/api/me', { method: 'PATCH', body })).member;
     renderMe();
     $('#profile').close();
-    runSearch();
+    if (state.profileRequired) openPendingLink();
+    else if (!$('#view-me').hidden) loadMe();
   } catch (ex) {
     err.textContent = ex.message;
   }
@@ -210,10 +242,10 @@ function showView(name) {
   $$('.view').forEach((v) => (v.hidden = v.id !== `view-${name}`));
   $$('.tabs button').forEach((b) => b.classList.toggle('active', b.dataset.view === name));
   if (name !== 'add') stopScanner();
-  if (name === 'find') runSearch();
-  if (name === 'requests') showRequestList();
-  if (name === 'me') loadMe();
   window.scrollTo(0, 0);
+  if (name === 'find') return runSearch();
+  if (name === 'requests') return showRequestList();
+  if (name === 'me') return loadMe();
 }
 $$('.tabs button').forEach((b) => b.addEventListener('click', () => showView(b.dataset.view)));
 
@@ -329,7 +361,7 @@ function requestCard(r) {
     buttons.push(`<button class="btn small" data-act="cancel" data-id="${r.id}">Cancel</button>`);
   }
   const due = r.status === 'accepted' && r.dueAt ? ` · due ${fmtDate(r.dueAt)}` : '';
-  return `<li class="book">${cover(r.book)}<div class="info">
+  return `<li class="book" data-request="${r.id}">${cover(r.book)}<div class="info">
       <div class="title">${esc(r.book.title)}</div>
       <div class="author">${who} · <span class="tag ${r.status === 'accepted' ? 'lent' : ''}">${STATUS_TEXT[r.status]}</span>${due}</div>
       ${r.note && r.status === 'pending' ? `<div class="note">“${esc(r.note)}”</div>` : ''}

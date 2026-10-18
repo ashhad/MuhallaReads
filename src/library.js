@@ -1,4 +1,5 @@
-// Borrowing, lending and private messaging between members. Shared by the WhatsApp bot and the web API.
+// Borrowing, lending and private messaging between members, done in the web app. WhatsApp only carries
+// notifications, each with a button that opens the right page of the app.
 // Nobody's phone number is ever revealed unless they explicitly choose to share it with one person.
 import { matchesQuery, placeOf } from './db.js';
 
@@ -13,10 +14,14 @@ export function createLibrary({ store, notifier, settings, clock = () => new Dat
   const fmtDate = (iso) =>
     new Date(iso).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', timeZone: settings.timeZone });
 
+  /** A button that opens the web app at `path` (e.g. "/?request=7"). Omitted if the site address isn't set. */
+  const appLink = (path, label) => (settings.publicUrl ? { url: settings.publicUrl + path, label } : undefined);
+  const requestLink = (id, label = 'Open request') => appLink(`/?request=${id}`, label);
+
   function getRequest(id, member) {
     const r = store.requestById(Number(id));
     if (!r || (r.borrower_id !== member.id && r.owner_id !== member.id)) {
-      throw new LibraryError(`No request #${id} found for you. Send *requests* to see yours.`);
+      throw new LibraryError(`No request #${id} found for you.`);
     }
     return r;
   }
@@ -28,16 +33,16 @@ export function createLibrary({ store, notifier, settings, clock = () => new Dat
 
   async function want(borrower, bookId, note = '') {
     const book = store.bookById(Number(bookId));
-    if (!book) throw new LibraryError(`No book #${bookId}. Search again to get the right number.`);
+    if (!book) throw new LibraryError("That book isn't in the catalogue any more.");
     if (book.owner_id === borrower.id) throw new LibraryError('That one is your own copy 🙂');
     if (store.isBlocked(borrower.id, book.owner_id)) throw new LibraryError("You can't request this book.");
     if (book.status === 'lent') throw new LibraryError(`*${book.title}* is lent out right now. Try again later.`);
     if (store.openRequestFor(borrower.id, book.id)) {
-      throw new LibraryError(`You've already asked for *${book.title}*. Send *requests* to see its status.`);
+      throw new LibraryError(`You've already asked for *${book.title}*. See the Requests tab.`);
     }
     if (store.countPending(borrower.id) >= settings.maxPendingRequests) {
       throw new LibraryError(
-        `You have ${settings.maxPendingRequests} requests waiting for an answer. Cancel one (*cancel <number>*) before asking for more.`,
+        `You have ${settings.maxPendingRequests} requests waiting for an answer. Cancel one before asking for more.`,
       );
     }
     note = String(note || '').trim().slice(0, 200);
@@ -48,16 +53,9 @@ export function createLibrary({ store, notifier, settings, clock = () => new Dat
       text:
         `📚 *${who(borrower)}* would like to borrow *${book.title}*.` +
         (note ? `\n💬 "${note}"` : '') +
-        `\n\nReply *accept ${id}* or *decline ${id}*.`,
-      buttons: [
-        { id: `accept:${id}`, title: 'Accept' },
-        { id: `decline:${id}`, title: 'Decline' },
-      ],
-      template: {
-        name: 'book_request',
-        params: [who(borrower), book.title, note || '-'],
-        buttons: [`accept:${id}`, `decline:${id}`],
-      },
+        '\n\nOpen the app to accept or decline.',
+      link: requestLink(id),
+      template: { name: 'book_request', params: [who(borrower), book.title, note || '-'], url: String(id) },
     });
     return store.requestById(id);
   }
@@ -72,14 +70,15 @@ export function createLibrary({ store, notifier, settings, clock = () => new Dat
       await notifier.notify(r.borrower_id, {
         requestId: r.id,
         text: `🙁 *${owner.name}* can't lend *${r.book_title}* right now.`,
-        template: { name: 'request_update', params: [r.book_title, `${owner.name} can't lend it right now`] },
+        link: requestLink(r.id),
+        template: { name: 'request_update', params: [r.book_title, `${owner.name} can't lend it right now`], url: String(r.id) },
       });
       return store.requestById(r.id);
     }
 
     const book = store.bookById(r.book_id);
     if (book.status === 'lent') {
-      throw new LibraryError(`*${r.book_title}* is marked as lent. Mark it returned first, or *decline ${r.id}*.`);
+      throw new LibraryError(`*${r.book_title}* is marked as lent. Mark it returned first, or decline this request.`);
     }
     const due = new Date(clock().getTime() + settings.loanDays * 86400_000).toISOString();
     store.updateRequest(r.id, { status: 'accepted', decided_at: clock().toISOString(), due_at: due });
@@ -89,14 +88,10 @@ export function createLibrary({ store, notifier, settings, clock = () => new Dat
       requestId: r.id,
       text:
         `✅ *${owner.name}* agreed to lend you *${r.book_title}*!\n\n` +
-        `Arrange the pickup here: *msg ${r.id} your message*, or swipe-reply to their messages. ` +
-        `Your numbers stay private unless one of you chooses *share ${r.id}*.\n` +
+        'Arrange the pickup in the app’s chat. Your numbers stay private unless one of you chooses to share. ' +
         `Please return it by ${fmtDate(due)}.`,
-      buttons: [{ id: `share:${r.id}`, title: 'Share my number' }],
-      template: {
-        name: 'request_update',
-        params: [r.book_title, `${owner.name} agreed to lend it`],
-      },
+      link: requestLink(r.id, 'Open chat'),
+      template: { name: 'request_update', params: [r.book_title, `${owner.name} agreed to lend it`], url: String(r.id) },
     });
     return store.requestById(r.id);
   }
@@ -149,12 +144,9 @@ export function createLibrary({ store, notifier, settings, clock = () => new Dat
 
     await notifier.notify(other.id, {
       requestId: r.id,
-      relay: true,
-      text: `💬 *${member.name}* · _${r.book_title}_ (#${r.id})\n${body}\n\n↩️ Swipe-reply to answer.`,
-      template: {
-        name: 'request_update',
-        params: [r.book_title, `${member.name} sent you a message`],
-      },
+      text: `💬 *${member.name}* about _${r.book_title}_:\n${body}\n\nReply in the app.`,
+      link: requestLink(r.id, 'Reply'),
+      template: { name: 'request_update', params: [r.book_title, `${member.name} sent you a message`], url: String(r.id) },
     });
     return msg;
   }
@@ -171,9 +163,11 @@ export function createLibrary({ store, notifier, settings, clock = () => new Dat
       text:
         `📞 *${member.name}* shared their number with you for *${r.book_title}*:\n` +
         `+${member.phone}\nhttps://wa.me/${member.phone}`,
+      link: requestLink(r.id),
       template: {
         name: 'request_update',
         params: [r.book_title, `${member.name} shared their contact number`],
+        url: String(r.id),
       },
     });
     return other;
@@ -204,10 +198,9 @@ export function createLibrary({ store, notifier, settings, clock = () => new Dat
       store.removeWish(wish.member_id, wish.id);
       await notifier.notify(wish.member_id, {
         text:
-          `📚 Good news: *${book.title}* (you asked about "${wish.query}") was just added by *${who(member)}*.\n` +
-          `Reply *want ${book.id}* to ask to borrow it.`,
-        buttons: [{ id: `want:${book.id}`, title: 'Request it' }],
-        template: { name: 'wishlist_match', params: [book.title, who(member)], buttons: [`want:${book.id}`] },
+          `📚 Good news: *${book.title}* (you asked about "${wish.query}") was just added by *${who(member)}*.`,
+        link: appLink(`/?q=${encodeURIComponent(book.title)}`, 'See the book'),
+        template: { name: 'wishlist_match', params: [book.title, who(member)], url: encodeURIComponent(book.title) },
       });
     }
     return result;
@@ -215,7 +208,7 @@ export function createLibrary({ store, notifier, settings, clock = () => new Dat
 
   function addWish(member, query) {
     query = String(query || '').trim().slice(0, 100);
-    if (!query) throw new LibraryError('What should I watch for? e.g. *notify me Harry Potter*');
+    if (!query) throw new LibraryError('Which book should we watch for?');
     return store.addWish(member.id, query);
   }
 
@@ -228,9 +221,10 @@ export function createLibrary({ store, notifier, settings, clock = () => new Dat
       await notifier.notify(r.borrower_id, {
         requestId: r.id,
         text: overdue
-          ? `⏰ *${r.book_title}* from ${r.owner_name} was due back on ${fmtDate(r.due_at)}. Please return it soon, or message them: *msg ${r.id} ...*`
+          ? `⏰ *${r.book_title}* from ${r.owner_name} was due back on ${fmtDate(r.due_at)}. Please return it soon, or message them in the app.`
           : `⏰ Reminder: *${r.book_title}* from ${r.owner_name} is due back on ${fmtDate(r.due_at)}.`,
-        template: { name: 'return_reminder', params: [r.book_title, r.owner_name, fmtDate(r.due_at)] },
+        link: requestLink(r.id),
+        template: { name: 'return_reminder', params: [r.book_title, r.owner_name, fmtDate(r.due_at)], url: String(r.id) },
       });
     }
     return loans.length;

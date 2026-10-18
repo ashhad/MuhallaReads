@@ -32,7 +32,7 @@ export function createApp({ store, deps = {}, settings = config } = {}) {
 
   const notifier = createNotifier({ store, transport, settings });
   const library = createLibrary({ store, notifier, settings });
-  const bot = createBot({ store, library, notifier, enrichAll, identifyBooks: identify, settings });
+  const bot = createBot({ store, library, notifier, settings });
 
   const app = express();
   app.locals.library = library;

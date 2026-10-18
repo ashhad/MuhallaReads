@@ -25,9 +25,9 @@ export function fakeTransport() {
   const sent = [];
   return {
     sent,
-    async send(to, { text, buttons }) {
+    async send(to, { text, buttons, link }) {
       const id = `wamid.${++n}`;
-      sent.push({ id, to, kind: 'text', text, buttons });
+      sent.push({ id, to, kind: 'text', text, buttons, link });
       return id;
     },
     async sendTemplate(to, t) {
@@ -44,7 +44,7 @@ export function fakeTransport() {
   };
 }
 
-export function makeWorld({ settings = {}, photoBooks = [] } = {}) {
+export function makeWorld({ settings = {} } = {}) {
   const store = openDb(':memory:');
   const transport = fakeTransport();
   const time = { now: Date.now() };
@@ -52,21 +52,16 @@ export function makeWorld({ settings = {}, photoBooks = [] } = {}) {
   const s = { ...baseSettings, ...settings };
   const notifier = createNotifier({ store, transport, settings: s, clock });
   const library = createLibrary({ store, notifier, settings: s, clock });
-  const bot = createBot({
-    store,
-    library,
-    notifier,
-    settings: s,
-    enrichAll: async (books) =>
-      books.map((b) => (b.isbn === '9780062315007' ? { ...b, title: 'The Alchemist', author: 'Paulo Coelho' } : b)),
-    identifyBooks: async () => photoBooks,
-  });
+  const bot = createBot({ store, library, notifier, settings: s });
 
   /** Sends a WhatsApp message as `phone`; returns the bot's direct replies joined together. */
   async function say(phone, text, extra = {}) {
     const replies = [];
-    await bot.handle({ phone, text, ...extra }, async (t, buttons) => {
-      replies.push(buttons ? `${t}\n[${buttons.map((b) => `${b.title}=${b.id}`).join(' | ')}]` : t);
+    await bot.handle({ phone, text, ...extra }, async (t, opts = {}) => {
+      let r = t;
+      if (opts.buttons) r += `\n[${opts.buttons.map((b) => `${b.title}=${b.id}`).join(' | ')}]`;
+      if (opts.link) r += `\n<${opts.link.label}: ${opts.link.url}>`;
+      replies.push(r);
     });
     return replies.join('\n---\n');
   }
@@ -84,5 +79,7 @@ export function makeWorld({ settings = {}, photoBooks = [] } = {}) {
     return say(phone, locality);
   }
 
-  return { store, transport, notifier, library, bot, say, join, closeWindow, time, settings: s };
+  const member = (phone) => store.memberByPhone(phone);
+
+  return { store, transport, notifier, library, bot, say, join, member, closeWindow, time, settings: s };
 }

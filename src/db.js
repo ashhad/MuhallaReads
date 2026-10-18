@@ -82,23 +82,15 @@ CREATE TABLE IF NOT EXISTS blocks (
 );
 
 -- Notifications waiting to be delivered on WhatsApp the next time the member messages the bot.
+-- (Older databases may still have unused buttons/relay columns and an outbound table; they're ignored.)
 CREATE TABLE IF NOT EXISTS inbox (
   id           INTEGER PRIMARY KEY,
   member_id    INTEGER NOT NULL REFERENCES members(id) ON DELETE CASCADE,
   request_id   INTEGER REFERENCES requests(id) ON DELETE CASCADE,
   text         TEXT NOT NULL,
-  buttons      TEXT,
-  relay        INTEGER NOT NULL DEFAULT 0,
+  link         TEXT,
   created_at   TEXT NOT NULL,
   delivered_at TEXT
-);
-
--- WhatsApp message ids of relayed chat messages, so a swipe-reply can be routed to the right request.
-CREATE TABLE IF NOT EXISTS outbound (
-  wa_id      TEXT PRIMARY KEY,
-  member_id  INTEGER NOT NULL REFERENCES members(id) ON DELETE CASCADE,
-  request_id INTEGER NOT NULL REFERENCES requests(id) ON DELETE CASCADE,
-  created_at TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS usage (
@@ -123,6 +115,8 @@ function migrate(db) {
   for (const col of ['building', 'locality']) {
     if (!memberCols.has(col)) db.exec(`ALTER TABLE members ADD COLUMN ${col} TEXT NOT NULL DEFAULT ''`);
   }
+  const inboxCols = new Set(db.prepare('PRAGMA table_info(inbox)').all().map((c) => c.name));
+  if (!inboxCols.has('link')) db.exec('ALTER TABLE inbox ADD COLUMN link TEXT');
 }
 
 /** "Green Park Tower, Saket": the rough location shown next to a member's name. Never a full address. */
@@ -400,19 +394,6 @@ export class Store {
     return this.q('SELECT * FROM messages WHERE request_id = ? ORDER BY id').all(requestId);
   }
 
-  recordOutbound(waId, memberId, requestId) {
-    this.q('INSERT OR REPLACE INTO outbound (wa_id, member_id, request_id, created_at) VALUES (?, ?, ?, ?)').run(
-      waId,
-      memberId,
-      requestId,
-      now(),
-    );
-  }
-
-  requestForOutbound(waId, memberId) {
-    return this.q('SELECT request_id FROM outbound WHERE wa_id = ? AND member_id = ?').get(waId, memberId)?.request_id;
-  }
-
   // ---------- wishlist ----------
 
   addWish(memberId, query) {
@@ -449,13 +430,12 @@ export class Store {
 
   // ---------- WhatsApp inbox ----------
 
-  addInbox(memberId, { text, buttons, requestId, relay }) {
-    this.q('INSERT INTO inbox (member_id, request_id, text, buttons, relay, created_at) VALUES (?, ?, ?, ?, ?, ?)').run(
+  addInbox(memberId, { text, link, requestId }) {
+    this.q('INSERT INTO inbox (member_id, request_id, text, link, created_at) VALUES (?, ?, ?, ?, ?)').run(
       memberId,
       requestId ?? null,
       text,
-      buttons ? JSON.stringify(buttons) : null,
-      relay ? 1 : 0,
+      link ? JSON.stringify(link) : null,
       now(),
     );
   }
@@ -463,7 +443,7 @@ export class Store {
   pendingInbox(memberId) {
     return this.q('SELECT * FROM inbox WHERE member_id = ? AND delivered_at IS NULL ORDER BY id')
       .all(memberId)
-      .map((r) => ({ ...r, buttons: r.buttons ? JSON.parse(r.buttons) : null }));
+      .map((r) => ({ ...r, link: r.link ? JSON.parse(r.link) : null }));
   }
 
   markInboxDelivered(ids) {

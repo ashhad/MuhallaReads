@@ -6,20 +6,17 @@ import { createApp } from '../src/server.js';
 import { parseIncoming } from '../src/whatsapp.js';
 import { baseSettings, AYESHA, BILAL } from './helpers.js';
 
-test('parses text, button taps, template buttons and swipe-replies', () => {
-  assert.deepEqual(parseIncoming({ from: AYESHA, id: 'w1', type: 'text', text: { body: 'dune' } }, 'Ayesha', null), {
-    phone: AYESHA, profileName: 'Ayesha', waId: 'w1', contextId: undefined, text: 'dune',
+test('parses text, button taps and other message types', () => {
+  assert.deepEqual(parseIncoming({ from: AYESHA, id: 'w1', type: 'text', text: { body: 'dune' } }, 'Ayesha'), {
+    phone: AYESHA, profileName: 'Ayesha', waId: 'w1', text: 'dune',
   });
-  const tap = parseIncoming({ from: AYESHA, id: 'w2', type: 'interactive', interactive: { type: 'button_reply', button_reply: { id: 'accept:3', title: 'Accept' } } });
-  assert.equal(tap.payload, 'accept:3');
-  const tpl = parseIncoming({ from: AYESHA, id: 'w3', type: 'button', button: { payload: 'decline:3', text: 'Decline' } });
-  assert.equal(tpl.payload, 'decline:3');
-  const swipe = parseIncoming({ from: AYESHA, id: 'w4', type: 'text', text: { body: 'ok' }, context: { id: 'wamid.9' } });
-  assert.equal(swipe.contextId, 'wamid.9');
-  assert.equal(parseIncoming({ from: AYESHA, id: 'w5', type: 'sticker' }), null);
+  const tap = parseIncoming({ from: AYESHA, id: 'w2', type: 'interactive', interactive: { type: 'button_reply', button_reply: { id: 'skip', title: 'Skip' } } });
+  assert.equal(tap.payload, 'skip');
+  assert.equal(parseIncoming({ from: AYESHA, id: 'w3', type: 'image', image: { id: 'm1' } }).other, 'image');
+  assert.equal(parseIncoming({ from: AYESHA, id: 'w4', type: 'reaction' }), null);
 });
 
-test('Cloud API webhook end to end: signature, replies and a paid template with buttons', async () => {
+test('Cloud API webhook end to end: signature, setup, sign-in button and a paid template', async () => {
   const store = openDb(':memory:');
   const app = createApp({
     store,
@@ -81,25 +78,29 @@ test('Cloud API webhook end to end: signature, replies and a paid template with 
     assert.equal(welcome[1].body.type, 'interactive'); // building question with a Skip button
     assert.equal(welcome[1].body.interactive.action.buttons[0].reply.id, 'skip');
     await chat(AYESHA, 'Ayesha', 'Green Park Tower', 1);
-    assert.match((await chat(AYESHA, 'Ayesha', 'Saket', 1))[0].body.text.body, /All set/);
-    assert.match((await chat(AYESHA, 'Ayesha', 'add Dune by Frank Herbert', 1))[0].body.text.body, /Added 1 book/);
+    const [done] = await chat(AYESHA, 'Ayesha', 'Saket', 1);
+    assert.equal(done.body.interactive.type, 'cta_url'); // "Open MohallaReads" button with a sign-in link
+    assert.match(done.body.interactive.body.text, /All set/);
+    assert.match(done.body.interactive.action.parameters.url, /^https:\/\/books\.example\.org\/#login=/);
+    const [other] = await chat(AYESHA, 'Ayesha', 'add Dune by Frank Herbert', 1);
+    assert.match(other.body.interactive.body.text, /happen in the app/);
 
-    // Ayesha's window is closed by the time Bilal asks, so Meta gets a template.
+    // Bilal requests Ayesha's book in the app while her window is closed, so Meta gets a template.
     const ayesha = store.memberByPhone(AYESHA);
+    const { added } = await app.locals.library.addBooks(ayesha, [{ title: 'Dune' }]);
     store.touchInbound(ayesha.id, new Date(Date.now() - 2 * 86400_000).toISOString());
-    const bookId = store.booksOf(ayesha.id)[0].id;
     await chat(BILAL, 'Bilal', 'hi', 2);
     await chat(BILAL, 'Bilal', 'skip', 1);
     await chat(BILAL, 'Bilal', 'Saket', 1);
-    const out = await chat(BILAL, 'Bilal', `want ${bookId}`, 2); // template to Ayesha, confirmation to Bilal
-    const tpl = out.find((s) => s.body.type === 'template');
+    const before = sent.length;
+    const r = await app.locals.library.want(store.memberByPhone(BILAL), added[0].id);
+    const tpl = sent.slice(before).find((s) => s.body.type === 'template');
     assert.equal(tpl.body.to, AYESHA);
     assert.equal(tpl.body.template.name, 'book_request');
     assert.equal(tpl.body.template.language.code, 'en');
-    const [bodyComp, accept, decline] = tpl.body.template.components;
+    const [bodyComp, urlButton] = tpl.body.template.components;
     assert.deepEqual(bodyComp.parameters.map((p) => p.text), ['Bilal (Saket)', 'Dune', '-']);
-    assert.match(accept.parameters[0].payload, /^accept:\d+$/);
-    assert.equal(decline.index, '1');
+    assert.deepEqual(urlButton, { type: 'button', sub_type: 'url', index: '0', parameters: [{ type: 'text', text: String(r.id) }] });
     assert.equal(store.usageFor().templates, 1);
   } finally {
     globalThis.fetch = realFetch;

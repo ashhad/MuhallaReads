@@ -2,11 +2,14 @@
 
 WhatsApp only lets the bot message someone **first** using a template that Meta has approved.
 Examples are telling an owner that a neighbour wants their book, or sending a return reminder.
-Replies to people who messaged the bot in the last 24 hours don't need templates.
+Replies to people who messaged the bot in the last 24 hours don't need templates; the app sends
+those as normal messages with an "Open request" button.
 
-MuhallaReads uses four templates. Create them in **WhatsApp Manager → Message templates → Create
-template**, exactly as below, then set `WHATSAPP_TEMPLATES=on` once all four are approved. Until
-then, keep it `off`: notifications wait until the person next messages the bot or opens the website.
+The library uses four templates. Each one has a **Visit website** button that opens the right page
+of the app. Create them in **WhatsApp Manager → Message templates → Create template**, exactly as
+below, then set `WHATSAPP_TEMPLATES=on` once all four are approved. Until then, keep it `off`:
+notifications wait until the person next messages the bot, and the app's Requests tab always shows
+everything.
 
 For each template:
 
@@ -17,6 +20,11 @@ For each template:
   `WHATSAPP_TEMPLATE_LANG=en_US`.
 - **Name:** exactly as shown. The app looks templates up by name.
 - **Sample values:** Meta asks for an example of each `{{n}}`. Use the ones given.
+- **Button:** choose **Visit website**, type **Dynamic**, button text `Open MohallaReads`, and the
+  URL shown, with **your own site address**. The `{{1}}` at the end of the URL is filled in by the
+  app (a request number, or a book title).
+
+In the examples below, replace `mohallareads.duckdns.org` with your site's address if it differs.
 
 ---
 
@@ -27,12 +35,13 @@ Sent to a book's owner when someone asks to borrow it.
 **Body**
 
 ```
-Hi, {{1}} has asked to borrow your book "{{2}}". Their note: {{3}}. Please accept or decline below.
+Hi, {{1}} has asked to borrow your book "{{2}}". Their note: {{3}}. Open the app to accept or decline.
 ```
 
-Samples: `{{1}}` = `Bilal (Block D)`, `{{2}}` = `Dune`, `{{3}}` = `Could I pick it up on Sunday?`
+Samples: `{{1}}` = `Bilal (Sunrise Apartments, Saket)`, `{{2}}` = `Dune`, `{{3}}` = `Could I pick it up on Sunday?`
 
-**Buttons:** Quick reply → `Accept`, Quick reply → `Decline`
+**Button:** Visit website · Dynamic · `Open MohallaReads` · `https://mohallareads.duckdns.org/?request={{1}}`
+(sample: `12`)
 
 ---
 
@@ -44,12 +53,13 @@ number.
 **Body**
 
 ```
-Update about the book "{{1}}": {{2}}. Reply to this chat to see the details.
+Update about the book "{{1}}": {{2}}. Open the app to see the details.
 ```
 
-Samples: `{{1}}` = `Dune`, `{{2}}` = `Ayesha (Block C) agreed to lend it`
+Samples: `{{1}}` = `Dune`, `{{2}}` = `Ayesha agreed to lend it`
 
-**Buttons:** none
+**Button:** Visit website · Dynamic · `Open MohallaReads` · `https://mohallareads.duckdns.org/?request={{1}}`
+(sample: `12`)
 
 ---
 
@@ -63,25 +73,27 @@ Sent to a borrower two days before a book is due, and once more if it's three da
 Reminder: "{{1}}", borrowed from {{2}}, is due back on {{3}}. Thank you.
 ```
 
-Samples: `{{1}}` = `Dune`, `{{2}}` = `Ayesha (Block C)`, `{{3}}` = `8 Nov`
+Samples: `{{1}}` = `Dune`, `{{2}}` = `Ayesha`, `{{3}}` = `8 Nov`
 
-**Buttons:** none
+**Button:** Visit website · Dynamic · `Open MohallaReads` · `https://mohallareads.duckdns.org/?request={{1}}`
+(sample: `12`)
 
 ---
 
 ### 4. `wishlist_match`
 
-Sent when a book someone asked to be notified about gets added.
+Sent when a book someone asked to be told about gets added.
 
 **Body**
 
 ```
-Good news: "{{1}}", which you asked about, is now available from {{2}}. Tap below to request it.
+Good news: "{{1}}", which you asked about, is now available from {{2}}. Open the app to request it.
 ```
 
-Samples: `{{1}}` = `Gitanjali`, `{{2}}` = `Ayesha (Block C)`
+Samples: `{{1}}` = `Gitanjali`, `{{2}}` = `Ayesha (Green Park Tower, Saket)`
 
-**Buttons:** Quick reply → `Request it`
+**Button:** Visit website · Dynamic · `Open MohallaReads` · `https://mohallareads.duckdns.org/?q={{1}}`
+(sample: `Gitanjali`)
 
 ---
 
@@ -90,7 +102,7 @@ Samples: `{{1}}` = `Gitanjali`, `{{2}}` = `Ayesha (Block C)`
 - If the person messaged the bot in the last 24 hours, the app sends a normal message instead.
   The first 1,000 of these each month are free.
 - While someone is away, they get **at most one** template. Anything else waits and is delivered
-  together (free) when they next message the bot, or shown on the website.
+  together (free) when they next message the bot, and is always visible in the app.
 - After `MONTHLY_TEMPLATE_LIMIT` templates in a month (default 200, about ₹27), templates stop
   and notifications simply wait. Admins can check usage by sending `stats` to the bot.
 - No promotional or broadcast messages are ever sent.

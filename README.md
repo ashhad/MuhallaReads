@@ -1,41 +1,43 @@
 # 📚 Muhalla Reads
 
-A private neighbourhood library that lives in WhatsApp. Neighbours list the books they own, find
-the ones they need, and borrow them from each other. **Nobody's phone number is ever shown to
-anyone** unless they choose to share it with one person.
+A private neighbourhood library. Neighbours list the books they own, find the ones they need, and
+borrow them from each other. **Nobody's phone number is ever shown to anyone** unless they choose
+to share it with one person.
 
 ## How it works
 
-Everything happens in a chat with the library's WhatsApp number, plus an optional website for
-browsing and scanning books. Nothing to install.
+The **website** (installable on the home screen, nothing to download) is where everything
+happens. **WhatsApp** is used only to join, manage your account, and get notifications.
 
-1. **Join:** message the library's number with the join code (if one is set), then answer two
-   quick questions: your **building or society** and your **locality** (at least one). Neighbours
-   see only your name plus those, e.g. "Ayesha · Green Park Tower, Saket", never a flat number
-   or address.
-2. **Add books:** type `add Dune by Frank Herbert`, send an ISBN, or send a **photo of your
-   shelf**. On the website you can also scan barcodes one after another.
-3. **Find:** type any title or author. Results show which neighbours have it.
-4. **Request:** tap **Ask Ayesha** (or send `want 12`). Ayesha gets a WhatsApp message with
-   **Accept / Decline** buttons. Neither number is revealed.
-5. **Arrange the hand-over** in a private chat relayed by the bot (`msg 7 …`, or simply
-   swipe-reply). Either person can tap **Share my number** to share it with that one person.
-6. **Return:** the borrower gets a reminder before the due date, and the owner sends
-   `returned 7` (or taps *Got it back* on the website).
+1. **Join on WhatsApp:** message the library's number with the join code, then answer two quick
+   questions: your **building or society** and your **locality** (at least one). Neighbours see
+   only your name plus those, e.g. "Ayesha · Green Park Tower, Saket", never a flat number or
+   address. The bot replies with a button that signs you into the website.
+2. **Add books in the app:** scan barcodes one after another, type a title, or take a shelf photo
+   (optional, needs an Anthropic key).
+3. **Find and request:** search, tap **Request**, add a note if you like.
+4. **Get notified on WhatsApp:** the owner gets "Bilal (Sunrise Apartments, Saket) would like to
+   borrow Dune" with an **Open request** button. They accept or decline in the app.
+5. **Arrange the hand-over** in the app's private chat. Each new message is notified on WhatsApp
+   with a **Reply** button. Either person can tap **Share my number** to share it with that one
+   person.
+6. **Return:** the borrower gets a reminder before the due date, and the owner taps
+   **Got it back**.
 
-Also available: **notify me** (be told when a book you searched for gets added), `block`,
-`requests`, `my books`, `undo`, `name …`, `building …`, `locality …`, `delete me` (removes your account and all your data),
-and `login` (sends a one-time link that signs you into the website, with no password and no phone
-number entry).
+Also in the app: **Tell me when someone adds it** (wishlist), block, and account deletion.
+
+On WhatsApp: `login` (a one-time sign-in button, no password), `name …`, `building …`,
+`locality …`, `delete me`, `help`, and for admins `stats`, `members`, `remove member <id>`.
+Anything else sent to the bot gets a button that opens the app.
 
 ### Privacy
 
 - Phone numbers are stored only on your server, so the bot can message people. The website and
   the bot never show them, except a number its owner explicitly shared with one person.
-- Messages between neighbours go through the bot, tied to a specific book request. People can't
-  message each other out of the blue, and either side can block the other.
-- Anyone can delete their account and data at any time (`delete me`).
-- The bot never posts in groups and never sends promotions.
+- Messages between neighbours are tied to a specific book request. People can't message each
+  other out of the blue, and either side can block the other.
+- Anyone can delete their account and data at any time (`delete me`, or the Me tab).
+- The bot never posts in groups and never sends promotions. See `public/privacy.html`.
 
 ### Cost
 
@@ -125,9 +127,9 @@ so if the main model declines a photo, another model retries it.
 ```
 public/           website: plain HTML/CSS/JS, no build step
 src/server.js     Express app and JSON API
-src/bot.js        WhatsApp commands
+src/bot.js        WhatsApp: joining, account settings, sign-in links
 src/library.js    requests, loans, private chat, wishlist, reminders
-src/notifier.js   cheapest way to reach someone (free reply / one template / wait)
+src/notifier.js   WhatsApp notifications: free reply / one template / wait
 src/whatsapp.js   Meta Cloud API: sending, webhook
 src/db.js         SQLite storage (node:sqlite)
 src/lookup.js     book details from Open Library, with Google Books as fallback
