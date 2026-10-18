@@ -4,6 +4,7 @@ import express from 'express';
 import { normalizePhone } from './phone.js';
 
 const MEDIA_TIMEOUT_MS = 20000;
+const SEND_TIMEOUT_MS = 15000;
 const BODY_LIMIT = 1024; // interactive message body limit
 
 const safeEqual = (a, b) => {
@@ -25,9 +26,14 @@ export function createMetaTransport({ token, phoneNumberId, graphVersion, templa
       method: 'POST',
       headers: { ...auth, 'Content-Type': 'application/json' },
       body: JSON.stringify({ messaging_product: 'whatsapp', ...payload }),
+      signal: AbortSignal.timeout(SEND_TIMEOUT_MS),
     });
     const data = await res.json().catch(() => ({}));
-    if (!res.ok) throw new Error(`WhatsApp API ${res.status}: ${data.error?.message || 'unknown error'}`);
+    if (!res.ok) {
+      const e = data.error || {};
+      throw new Error(`WhatsApp API ${res.status} (code ${e.code ?? '?'}): ${e.message || 'unknown error'}`);
+    }
+    console.log(`WhatsApp: sent ${payload.type}${payload.template ? ` "${payload.template.name}"` : ''}`);
     return data.messages?.[0]?.id;
   }
 
@@ -145,6 +151,7 @@ export function whatsappRouter({ bot, transport, config }) {
           if (seen.size > 2000) seen.delete(seen.values().next().value);
 
           const msg = parseIncoming(m, names[m.from], transport);
+          console.log(`WhatsApp: incoming ${m.type}${msg ? '' : ' (ignored)'}`);
           if (!msg) continue;
           const reply = (text, buttons) => transport.send(m.from, { text, buttons });
           bot.handle(msg, reply).catch((err) => {
