@@ -183,7 +183,7 @@ test('wishlist: told when someone adds the book, with a link to it', async () =>
   w.transport.clear();
   await w.library.addBooks(w.member(AYESHA), [{ title: 'Gitanjali', author: 'Rabindranath Tagore' }]);
   const [n] = w.transport.to(BILAL);
-  assert.equal(n.name, 'wishlist_match');
+  assert.equal(n.name, 'wishlist_alert');
   assert.deepEqual(n.params, ['Gitanjali', 'Ayesha (Green Park Tower, Saket)']);
   assert.equal(n.url, 'Gitanjali');
   assert.equal(w.store.wishesOf(w.member(BILAL).id).length, 0);

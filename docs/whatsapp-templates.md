@@ -80,7 +80,10 @@ Samples: `{{1}}` = `Dune`, `{{2}}` = `Ayesha`, `{{3}}` = `8 Nov`
 
 ---
 
-### 4. `wishlist_match`
+### 4. `wishlist_alert`
+
+(An earlier version of this guide called it `wishlist_match`. If you submitted that one, ignore or
+delete it; the app no longer uses it.)
 
 Sent when a book someone asked to be told about gets added. Keep the wording plain: phrases like
 "Good news" or "now available" make Meta treat it as Marketing (about 7× the price, and often not

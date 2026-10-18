@@ -200,7 +200,7 @@ export function createLibrary({ store, notifier, settings, clock = () => new Dat
         text:
           `📚 Good news: *${book.title}* (you asked about "${wish.query}") was just added by *${who(member)}*.`,
         link: appLink(`/?q=${encodeURIComponent(book.title)}`, 'See the book'),
-        template: { name: 'wishlist_match', params: [book.title, who(member)], url: encodeURIComponent(book.title) },
+        template: { name: 'wishlist_alert', params: [book.title, who(member)], url: encodeURIComponent(book.title) },
       });
     }
     return result;
