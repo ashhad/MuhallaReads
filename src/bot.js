@@ -1,22 +1,26 @@
-// The WhatsApp bot's brain. Transport-agnostic: whatsapp.js feeds it messages and sends its replies.
+// The WhatsApp bot's brain. whatsapp.js feeds it incoming messages; it replies via `send`.
+// Members only ever see each other's display names. Phone numbers stay on the server.
 import { looksLikeIsbn, normalizeIsbn } from './isbn.js';
-import { waLink } from './phone.js';
+import { LibraryError } from './library.js';
 
 const MAX_RESULTS = 5;
 const MAX_MESSAGE = 3900; // WhatsApp's limit is 4096 characters
 
 export function helpText(communityName) {
   return [
-    `📚 *${communityName}* — our neighbourhood library`,
+    `📚 *${communityName}*: our neighbourhood library`,
     '',
-    '🔎 *Find a book*: just type its title or author',
-    '➕ *Add a book*: `add The Alchemist by Paulo Coelho`',
-    '   or `add 9780062315007` (ISBN)',
-    '   or several at once, one per line after `add`',
-    '📷 *Add by photo*: send a photo of a cover, barcode or your bookshelf',
-    '📖 *Your books*: `my books`',
-    '🗑️ `remove 12` · 🤝 `lent 12` · ✅ `back 12`',
-    '↩️ `undo` removes the books you added last',
+    '🔎 *Find*: type a title or author',
+    '🙋 *Borrow*: `want 12` (the number from search results)',
+    '➕ *Add*: `add Title by Author`, `add <ISBN>`, or send a photo of your shelf',
+    '📋 `requests`: your requests and loans',
+    '💬 `msg 7 hello`: message about request 7 (or swipe-reply)',
+    '🔔 `notify me`: after a search finds nothing',
+    '📖 `my books` · ↩️ `undo` · 🗑️ `remove 12`',
+    '🌐 `login`: open the website',
+    '👤 `name Ashhad (Block C)`: how neighbours see you',
+    '',
+    '🔒 Your number is never shown to anyone. `share 7` gives it to that one person, only if you choose.',
   ].join('\n');
 }
 
@@ -31,131 +35,394 @@ export function parseBookLine(line) {
   return { title: text, author: '', isbn: null };
 }
 
-const describe = (b) => `*${b.title}*${b.author ? ` — ${b.author}` : ''}`;
+/** Display names: no WhatsApp formatting characters, no line breaks, 2–40 characters. */
+export function cleanName(s) {
+  const name = String(s || '').replace(/[*_~`\n\r\t]/g, '').replace(/\s+/g, ' ').trim().slice(0, 40);
+  return name.length >= 2 ? name : '';
+}
 
+const describe = (b) => `*${b.title}*${b.author ? ` — ${b.author}` : ''}`;
 const clip = (s) => (s.length > MAX_MESSAGE ? s.slice(0, MAX_MESSAGE - 20) + '\n…(more not shown)' : s);
+const shorten = (s, n) => (s.length > n ? s.slice(0, n - 1) + '…' : s);
+
+// Button ids look like "accept:7"; turn them into the equivalent typed command.
+const payloadToCommand = (p) => String(p).replace(':', ' ');
+const payloadRequestId = (p) => {
+  const m = /^(accept|decline|share):(\d+)$/.exec(String(p || ''));
+  return m ? Number(m[2]) : undefined;
+};
 
 /**
  * @param {object} deps
  * @param {import('./db.js').Store} deps.store
+ * @param {ReturnType<import('./library.js').createLibrary>} deps.library
+ * @param {ReturnType<import('./notifier.js').createNotifier>} deps.notifier
  * @param {(books: object[]) => Promise<object[]>} deps.enrichAll
  * @param {(buf: Buffer, type: string) => Promise<object[]>} deps.identifyBooks
- * @param {{communityName: string, joinCode: string, publicUrl?: string}} deps.settings
+ * @param {object} deps.settings
  */
-export function createBot({ store, enrichAll, identifyBooks, settings }) {
+export function createBot({ store, library, notifier, enrichAll, identifyBooks, settings }) {
+  const lastEmptySearch = new Map(); // member id -> query, for "notify me"
+  const confirmingDelete = new Set();
+
   async function addBooks(member, books, reply) {
     const enriched = await enrichAll(books);
     const usable = enriched.filter((b) => b.title);
     const unknown = enriched.length - usable.length;
-    const { added, skipped } = store.addBooks(member.id, usable);
+    const { added, skipped } = await library.addBooks(member, usable);
     const lines = [];
     if (added.length) {
       lines.push(`✅ Added ${added.length} book${added.length > 1 ? 's' : ''}:`);
       for (const b of added) lines.push(`#${b.id} ${describe(b)}`);
     }
     if (skipped.length) lines.push(`ℹ️ Already in your list: ${skipped.map((b) => b.title).join(', ')}`);
-    if (unknown) lines.push(`⚠️ Couldn't find ${unknown} ISBN${unknown > 1 ? 's' : ''} — try adding by title instead.`);
+    if (unknown) lines.push(`⚠️ Couldn't find ${unknown} ISBN${unknown > 1 ? 's' : ''}. Try adding by title instead.`);
     if (added.length) lines.push('', 'Wrong? Reply `undo`, or `remove <number>`.');
     await reply(clip(lines.join('\n') || 'Nothing to add.'));
   }
 
-  function searchReply(member, query) {
+  async function search(member, query, reply) {
     const groups = store.search(query, { limit: MAX_RESULTS + 1 });
     if (!groups.length) {
-      return `😕 Nobody has "${query}" yet.\nAsk your group: ${waLink('', `Does anyone have "${query}"? 📚`)}`;
+      lastEmptySearch.set(member.id, query);
+      return reply(`😕 Nobody has "${query}" yet.\nReply *notify me* and I'll tell you when someone adds it.`, [
+        { id: `wish:${query.slice(0, 100)}`, title: 'Notify me' },
+      ]);
     }
     const lines = [];
+    const wantable = [];
     for (const g of groups.slice(0, MAX_RESULTS)) {
       lines.push(`📖 ${describe(g)}`);
       for (const c of g.copies) {
-        const who = c.owner.id === member.id ? 'You' : c.owner.name;
-        const state = c.status === 'lent' ? ' (lent out)' : ' ✅';
-        const link =
-          c.owner.id === member.id
-            ? ''
-            : `\n     ${waLink(c.owner.phone, `Hi ${c.owner.name}! Could I borrow "${g.title}"? (found it on ${settings.communityName})`)}`;
-        lines.push(`   • ${who}${state}${link}`);
+        if (c.owner.id === member.id) lines.push('   • You');
+        else if (c.status === 'lent') lines.push(`   • ${c.owner.name} (lent out)`);
+        else {
+          lines.push(`   • ${c.owner.name} ✅ → *want ${c.bookId}*`);
+          wantable.push({ ...c, title: g.title });
+        }
       }
       lines.push('');
     }
-    if (groups.length > MAX_RESULTS) lines.push('More results — try a more specific search.');
-    return clip(lines.join('\n').trim());
+    if (groups.length > MAX_RESULTS) lines.push('More results: try a more specific search.');
+    const single = groups.length === 1;
+    const buttons =
+      wantable.length && wantable.length <= 3
+        ? wantable.map((c) => ({
+            id: `want:${c.bookId}`,
+            title: single ? shorten(`Ask ${c.owner.name}`, 20) : shorten(`${shorten(c.title, 10)}·${c.owner.name}`, 20),
+          }))
+        : undefined;
+    return reply(clip(lines.join('\n').trim()), buttons);
   }
 
   function myBooks(member) {
     const books = store.booksOf(member.id);
-    if (!books.length) return 'You haven\'t added any books yet. Send `add <title>` or a photo of your shelf.';
+    if (!books.length) return "You haven't added any books yet. Send `add <title>` or a photo of your shelf.";
     const lines = [`📚 Your ${books.length} book${books.length > 1 ? 's' : ''}:`];
     for (const b of books) lines.push(`#${b.id} ${describe(b)}${b.status === 'lent' ? ' (lent out)' : ''}`);
     return clip(lines.join('\n'));
   }
 
+  function requestsText(member) {
+    const all = store.requestsFor(member.id);
+    const incoming = all.filter((r) => r.owner_id === member.id && r.status === 'pending');
+    const lending = all.filter((r) => r.owner_id === member.id && r.status === 'accepted');
+    const mine = all.filter((r) => r.borrower_id === member.id && ['pending', 'accepted'].includes(r.status));
+    if (!incoming.length && !lending.length && !mine.length) return 'No open requests or loans.';
+    const lines = [];
+    if (incoming.length) {
+      lines.push('📥 *Asking for your books*');
+      for (const r of incoming) lines.push(`#${r.id} ${r.borrower_name} → *${r.book_title}*: *accept ${r.id}* / *decline ${r.id}*`);
+      lines.push('');
+    }
+    if (lending.length) {
+      lines.push('🤝 *You lent*');
+      for (const r of lending) {
+        lines.push(`#${r.id} *${r.book_title}* to ${r.borrower_name}, due ${library.fmtDate(r.due_at)}. Got it back? *returned ${r.id}*`);
+      }
+      lines.push('');
+    }
+    if (mine.length) {
+      lines.push('📤 *You asked for*');
+      for (const r of mine) {
+        lines.push(
+          r.status === 'pending'
+            ? `#${r.id} *${r.book_title}* from ${r.owner_name}: waiting (*cancel ${r.id}*)`
+            : `#${r.id} *${r.book_title}* from ${r.owner_name}: due ${library.fmtDate(r.due_at)}`,
+        );
+      }
+    }
+    return clip(lines.join('\n').trim());
+  }
+
+  const isAdmin = (member) => settings.adminPhones?.includes(member.phone);
+
+  // Each command: [pattern, handler(member, match, reply, msg)].
+  const commands = [
+    [/^(help|hi|hello|hey|menu|start|salaam|salam|\?)\W*$/i, (m, _, reply) => reply(helpText(settings.communityName))],
+    [/^join\b/i, (m, _, reply) => reply(`You're already a member, ${m.name}! 🙂`)],
+    [
+      /^name\s+([\s\S]+)$/i,
+      (m, x, reply) => {
+        const name = cleanName(x[1]);
+        if (!name) return reply('Please give a name of 2–40 characters, e.g. `name Ashhad (Block C)`');
+        store.renameMember(m.id, name);
+        return reply(`👤 Neighbours will now see you as *${name}*.`);
+      },
+    ],
+    [
+      /^(login|log in|website|web|link)$/i,
+      (m, _, reply) => {
+        if (!settings.publicUrl) return reply('The website address isn\'t set up yet. Ask the admin.');
+        const code = store.createLoginCode(m.id);
+        return reply(`🌐 Tap to open the library (link works once, for 15 minutes):\n${settings.publicUrl}/#login=${code}`);
+      },
+    ],
+    [
+      /^add\b[:\s]*([\s\S]*)$/i,
+      (m, x, reply) => {
+        const lines = x[1].split('\n').map((l) => l.trim()).filter(Boolean);
+        if (!lines.length) return reply('What should I add? e.g. `add The Alchemist by Paulo Coelho`');
+        return addBooks(m, lines.map(parseBookLine), reply);
+      },
+    ],
+    [/^(my books|my|mine|my list|list|books)$/i, (m, _, reply) => reply(myBooks(m))],
+    [
+      /^(remove|delete|del)\s+#?(\d+)$/i,
+      (m, x, reply) => {
+        const b = store.removeBook(m.id, Number(x[2]));
+        return reply(b ? `🗑️ Removed ${describe(b)}` : `No book #${x[2]} in your list. Send \`my books\` to see numbers.`);
+      },
+    ],
+    [
+      /^(lent|lend|loaned|given)\s+#?(\d+)$/i,
+      (m, x, reply) => {
+        const b = store.setStatus(m.id, Number(x[2]), 'lent');
+        return reply(b ? `🤝 Marked ${describe(b)} as lent out.` : `No book #${x[2]} in your list.`);
+      },
+    ],
+    [
+      /^(back|available)\s+#?(\d+)$/i,
+      async (m, x, reply) => {
+        const b = await library.setAvailability(m, x[2], 'available');
+        return reply(b ? `✅ ${describe(b)} is available again.` : `No book #${x[2]} in your list.`);
+      },
+    ],
+    [
+      /^undo$/i,
+      (m, _, reply) => {
+        const removed = store.undoLastBatch(m.id);
+        return reply(removed.length ? `↩️ Removed ${removed.map((b) => b.title).join(', ')}` : 'Nothing to undo.');
+      },
+    ],
+    [
+      /^(want|borrow|request)\s+#?(\d+)(?:\s+([\s\S]+))?$/i,
+      async (m, x, reply) => {
+        const r = await library.want(m, x[2], x[3]);
+        return reply(
+          `🙋 Asked ${r.owner_name} for *${r.book_title}* (request #${r.id}). I'll let you know when they answer.\n` +
+            `Your number is not shared.`,
+        );
+      },
+    ],
+    [
+      /^(accept|yes|decline|no|reject)\s+#?(\d+)$/i,
+      async (m, x, reply) => {
+        const accept = /^(accept|yes)$/i.test(x[1]);
+        const r = await library.decide(m, x[2], accept);
+        if (!accept) return reply(`Declined. ${r.borrower_name} has been told.`);
+        return reply(
+          `✅ You're lending *${r.book_title}* to ${r.borrower_name} (due ${library.fmtDate(r.due_at)}).\n` +
+            `Arrange the hand-over here: *msg ${r.id} your message*. Your number stays private unless you tap *Share my number*.\n` +
+            `When you get it back: *returned ${r.id}*`,
+          [{ id: `share:${r.id}`, title: 'Share my number' }],
+        );
+      },
+    ],
+    [
+      /^(msg|message|reply)\s+#?(\d+)\s+([\s\S]+)$/i,
+      async (m, x, reply) => {
+        await library.sendMessage(m, x[2], x[3]);
+        return reply('✉️ Sent.');
+      },
+    ],
+    [
+      /^share\s+#?(\d+)$/i,
+      async (m, x, reply) => {
+        const other = await library.shareNumber(m, x[1]);
+        return reply(`📞 Your number was shared with ${other.name} only.`);
+      },
+    ],
+    [
+      /^(returned|got it back)\s+#?(\d+)$/i,
+      async (m, x, reply) => {
+        const r = await library.markReturned(m, x[2]);
+        return reply(`📗 *${r.book_title}* is back on your shelf and available again.`);
+      },
+    ],
+    [
+      /^cancel\s+#?(\d+)$/i,
+      (m, x, reply) => {
+        const r = library.cancel(m, x[1]);
+        return reply(`Cancelled your request for *${r.book_title}*.`);
+      },
+    ],
+    [
+      /^block\s+#?(\d+)$/i,
+      (m, x, reply) => {
+        const other = library.block(m, x[1]);
+        return reply(`🚫 Blocked ${other.name}. They can't request your books or message you, and you won't see requests from them.`);
+      },
+    ],
+    [/^(requests|loans|borrowed|status)$/i, (m, _, reply) => reply(requestsText(m))],
+    [
+      /^(wish|notify me|notify)\b[:\s]*(.*)$/is,
+      (m, x, reply) => {
+        const query = x[2].trim() || lastEmptySearch.get(m.id);
+        if (!query) return reply('What should I watch for? e.g. `notify me Harry Potter`');
+        library.addWish(m, query);
+        lastEmptySearch.delete(m.id);
+        return reply(`🔔 I'll tell you when someone adds "${query}".`);
+      },
+    ],
+    [
+      /^(wishes|my wishes|wishlist)$/i,
+      (m, _, reply) => {
+        const w = store.wishesOf(m.id);
+        if (!w.length) return reply('You are not waiting for any books.');
+        return reply(['🔔 Waiting for:', ...w.map((x) => `#${x.id} ${x.query}  (*unwish ${x.id}*)`)].join('\n'));
+      },
+    ],
+    [
+      /^unwish\s+#?(\d+)$/i,
+      (m, x, reply) => reply(store.removeWish(m.id, Number(x[1])) ? 'Removed.' : 'Not found.'),
+    ],
+    [
+      /^(delete me|delete my account|delete account)$/i,
+      (m, _, reply) => {
+        confirmingDelete.add(m.id);
+        return reply(
+          '⚠️ This removes your account, your books and all your requests and messages. It can\'t be undone.\n' +
+            'Reply *DELETE EVERYTHING* to confirm.',
+        );
+      },
+    ],
+    [
+      /^delete everything$/i,
+      (m, _, reply) => {
+        if (!confirmingDelete.delete(m.id)) return reply('Send *delete me* first.');
+        library.deleteAccount(m);
+        return reply('Your account and data have been deleted. Goodbye! 👋');
+      },
+    ],
+    // ---- admin ----
+    [
+      /^stats$/i,
+      (m, _, reply) => {
+        if (!isAdmin(m)) return search(m, 'stats', reply);
+        const s = store.stats();
+        const u = store.usageFor();
+        return reply(
+          `📊 ${s.members} members · ${s.books} books · ${s.loans} active loans\n` +
+            `WhatsApp this month: ${u.templates}/${settings.monthlyTemplateLimit} paid templates (≈ ₹${(u.templates * 0.136).toFixed(2)}), ${u.service} free replies`,
+        );
+      },
+    ],
+    [
+      /^members$/i,
+      (m, _, reply) => {
+        if (!isAdmin(m)) return search(m, 'members', reply);
+        return reply(clip(store.listMembers().map((x) => `#${x.id} ${x.name}`).join('\n')));
+      },
+    ],
+    [
+      /^remove member\s+#?(\d+)$/i,
+      (m, x, reply) => {
+        if (!isAdmin(m)) return reply('Only admins can remove members.');
+        const target = store.memberById(Number(x[1]));
+        if (!target) return reply('No such member.');
+        store.deleteMember(target.id);
+        return reply(`Removed ${target.name} and their books.`);
+      },
+    ],
+  ];
+
+  const isCommand = (text) => commands.some(([re]) => re.test(text));
+
   /**
    * Handles one incoming message.
-   * @param {{phone: string, profileName?: string, text?: string, image?: () => Promise<{buffer: Buffer, mediaType: string}>}} msg
-   * @param {(text: string) => Promise<void>} reply
+   * @param {{phone: string, profileName?: string, text?: string, payload?: string, contextId?: string,
+   *          image?: () => Promise<{buffer: Buffer, mediaType: string}>}} msg
+   * @param {(text: string, buttons?: {id: string, title: string}[]) => Promise<unknown>} send
    */
-  async function handle(msg, reply) {
-    const text = (msg.text || '').trim();
+  async function handle(msg, send) {
+    const reply = async (text, buttons) => {
+      await send(text, buttons);
+      store.bumpUsage('service');
+    };
+    const text = (msg.payload ? payloadToCommand(msg.payload) : msg.text || '').trim();
     let member = store.memberByPhone(msg.phone);
 
     if (!member) {
       const join = /^join\b\s*(.*)$/is.exec(text);
       const code = join?.[1]?.trim() || '';
-      if (settings.joinCode && code !== settings.joinCode) {
+      if (settings.joinCode && code.toLowerCase() !== settings.joinCode.toLowerCase()) {
         return reply(
           `👋 Welcome to *${settings.communityName}*!\nTo join, reply: \`join <community code>\`\n(Ask a neighbour for the code.)`,
         );
       }
-      member = store.upsertMember({ name: msg.profileName || `Member ${msg.phone.slice(-4)}`, phone: msg.phone });
-      await reply(`🎉 You're in, ${member.name}!\n\n${helpText(settings.communityName)}`);
-      if (join || !text) return;
+      const name = cleanName(msg.profileName) || 'Neighbour';
+      member = store.createMember({ name, phone: msg.phone });
+      await reply(
+        `🎉 Welcome, ${name}! Neighbours will see you as *${name}*. Change it with \`name <your name>\`.\n\n` +
+          helpText(settings.communityName),
+      );
+      store.touchInbound(member.id);
+      if (join || !text || /^(hi|hello|hey|help|start|login)\W*$/i.test(text)) return;
     }
 
-    if (msg.image) {
-      await reply('📷 Got it — looking for books in your photo…');
-      let found;
-      try {
-        const { buffer, mediaType } = await msg.image();
-        found = await identifyBooks(buffer, mediaType);
-      } catch (err) {
-        return reply(`⚠️ ${err.message || 'Could not read that photo.'}`);
+    store.touchInbound(member.id);
+    member = store.memberById(member.id);
+    const delivered = await notifier.flush(member, { skipRequestId: payloadRequestId(msg.payload) });
+
+    try {
+      // Swipe-reply to a relayed chat message → send it to the other person.
+      if (msg.contextId && text && !isCommand(text)) {
+        const requestId = store.requestForOutbound(msg.contextId, member.id);
+        if (requestId) {
+          await library.sendMessage(member, requestId, text);
+          return await reply('✉️ Sent.');
+        }
       }
-      if (!found.length) return reply('😕 I couldn\'t make out any book titles. Try a closer, well-lit photo.');
-      return addBooks(member, found, reply);
-    }
 
-    if (!text) return reply(helpText(settings.communityName));
+      if (msg.image) {
+        await reply('📷 Got it! Looking for books in your photo…');
+        let found;
+        try {
+          const { buffer, mediaType } = await msg.image();
+          found = await identifyBooks(buffer, mediaType);
+        } catch (err) {
+          return await reply(`⚠️ ${err.message || 'Could not read that photo.'}`);
+        }
+        if (!found.length) return await reply("😕 I couldn't make out any book titles. Try a closer, well-lit photo.");
+        return await addBooks(member, found, reply);
+      }
 
-    let m;
-    if (/^(help|hi|hello|hey|menu|start|salaam|salam|\?)\W*$/i.test(text)) return reply(helpText(settings.communityName));
-    if (/^join\b/i.test(text)) return reply(`You're already a member, ${member.name}! 🙂`);
-    if ((m = /^add\b[:\s]*([\s\S]*)$/i.exec(text))) {
-      const lines = m[1].split('\n').map((l) => l.trim()).filter(Boolean);
-      if (!lines.length) return reply('What should I add? e.g. `add The Alchemist by Paulo Coelho`');
-      return addBooks(member, lines.map(parseBookLine), reply);
-    }
-    if (/^(my books|my|mine|my list|list)$/i.test(text)) return reply(myBooks(member));
-    if ((m = /^(remove|delete|del)\s+#?(\d+)$/i.exec(text))) {
-      const b = store.removeBook(member.id, Number(m[2]));
-      return reply(b ? `🗑️ Removed ${describe(b)}` : `No book #${m[2]} in your list. Send \`my books\` to see numbers.`);
-    }
-    if ((m = /^(lent|lend|loaned|given)\s+#?(\d+)/i.exec(text))) {
-      const b = store.setStatus(member.id, Number(m[2]), 'lent');
-      return reply(b ? `🤝 Marked ${describe(b)} as lent out.` : `No book #${m[2]} in your list.`);
-    }
-    if ((m = /^(back|returned|available)\s+#?(\d+)/i.exec(text))) {
-      const b = store.setStatus(member.id, Number(m[2]), 'available');
-      return reply(b ? `✅ ${describe(b)} is available again.` : `No book #${m[2]} in your list.`);
-    }
-    if (/^undo$/i.test(text)) {
-      const removed = store.undoLastBatch(member.id);
-      return reply(removed.length ? `↩️ Removed ${removed.map((b) => b.title).join(', ')}` : 'Nothing to undo.');
-    }
+      if (!text) return delivered ? undefined : await reply(helpText(settings.communityName));
 
-    m = /^(find|search|who has|whohas|anyone has|does anyone have)\b[:\s]*(.+)$/i.exec(text);
-    const query = (m ? m[2] : text).replace(/[?？]+$/, '').trim();
-    return reply(searchReply(member, query));
+      for (const [re, fn] of commands) {
+        const match = re.exec(text);
+        if (match) return await fn(member, match, reply, msg);
+      }
+
+      // Anything else is a search, unless they were just catching up on queued messages.
+      if (delivered && !/^(find|search)\b/i.test(text)) return;
+      const query = text.replace(/^(find|search|who has|whohas|anyone has|does anyone have)\b[:\s]*/i, '').replace(/[?？]+$/, '').trim();
+      return await search(member, query || text, reply);
+    } catch (err) {
+      if (err instanceof LibraryError) return reply(`⚠️ ${err.message}`);
+      throw err;
+    }
   }
 
   return { handle };

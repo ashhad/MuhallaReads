@@ -1,9 +1,10 @@
-// WhatsApp transports. Two options, use whichever you set up:
-//  - Meta WhatsApp Cloud API: GET/POST /webhooks/whatsapp
-//  - Twilio WhatsApp:         POST     /webhooks/twilio
+// WhatsApp Cloud API (Meta): sending messages, and the webhook that receives them.
 import crypto from 'node:crypto';
 import express from 'express';
 import { normalizePhone } from './phone.js';
+
+const MEDIA_TIMEOUT_MS = 20000;
+const BODY_LIMIT = 1024; // interactive message body limit
 
 const safeEqual = (a, b) => {
   const x = Buffer.from(String(a));
@@ -11,34 +12,54 @@ const safeEqual = (a, b) => {
   return x.length === y.length && crypto.timingSafeEqual(x, y);
 };
 
-const MEDIA_TIMEOUT_MS = 20000;
+// Template parameters can't contain newlines, tabs or long runs of spaces, and can't be empty.
+const templateParam = (s) =>
+  String(s ?? '').replace(/[\n\r\t]+/g, ' ').replace(/ {2,}/g, ' ').trim().slice(0, 300) || '-';
 
-export function whatsappRouter({ bot, config }) {
-  const router = express.Router();
-  const wa = config.whatsapp;
-  const tw = config.twilio;
+export function createMetaTransport({ token, phoneNumberId, graphVersion, templateLang }) {
+  const graph = (p) => `https://graph.facebook.com/${graphVersion}/${p}`;
+  const auth = { Authorization: `Bearer ${token}` };
 
-  const runBot = (msg, send) =>
-    bot.handle(msg, send).catch((err) => {
-      console.error('WhatsApp bot error:', err);
-      return send('⚠️ Something went wrong. Please try again.').catch(() => {});
-    });
-
-  // ---------- Meta WhatsApp Cloud API ----------
-
-  const graph = (p) => `https://graph.facebook.com/${wa.graphVersion}/${p}`;
-
-  async function cloudSend(to, body) {
-    const res = await fetch(graph(`${wa.phoneNumberId}/messages`), {
+  async function post(payload) {
+    const res = await fetch(graph(`${phoneNumberId}/messages`), {
       method: 'POST',
-      headers: { Authorization: `Bearer ${wa.token}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ messaging_product: 'whatsapp', to, type: 'text', text: { body, preview_url: false } }),
+      headers: { ...auth, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ messaging_product: 'whatsapp', ...payload }),
     });
-    if (!res.ok) console.error('WhatsApp send failed:', res.status, await res.text());
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(`WhatsApp API ${res.status}: ${data.error?.message || 'unknown error'}`);
+    return data.messages?.[0]?.id;
   }
 
-  async function cloudMedia(mediaId) {
-    const auth = { Authorization: `Bearer ${wa.token}` };
+  /** Sends a normal message (only allowed within 24h of the member's last message). Returns its id. */
+  async function send(to, { text, buttons }) {
+    if (!buttons?.length) {
+      return post({ to, type: 'text', text: { body: text, preview_url: false } });
+    }
+    const action = {
+      buttons: buttons.slice(0, 3).map((b) => ({ type: 'reply', reply: { id: b.id.slice(0, 256), title: b.title.slice(0, 20) } })),
+    };
+    if (text.length <= BODY_LIMIT) {
+      return post({ to, type: 'interactive', interactive: { type: 'button', body: { text }, action } });
+    }
+    const id = await post({ to, type: 'text', text: { body: text, preview_url: false } });
+    await post({ to, type: 'interactive', interactive: { type: 'button', body: { text: '👇' }, action } });
+    return id;
+  }
+
+  /** Sends a pre-approved template (allowed any time; paid). */
+  async function sendTemplate(to, { name, params = [], buttons = [] }) {
+    const components = [];
+    if (params.length) {
+      components.push({ type: 'body', parameters: params.map((p) => ({ type: 'text', text: templateParam(p) })) });
+    }
+    buttons.forEach((payload, i) =>
+      components.push({ type: 'button', sub_type: 'quick_reply', index: String(i), parameters: [{ type: 'payload', payload }] }),
+    );
+    return post({ to, type: 'template', template: { name, language: { code: templateLang }, components } });
+  }
+
+  async function downloadMedia(mediaId) {
     const meta = await fetch(graph(mediaId), { headers: auth, signal: AbortSignal.timeout(MEDIA_TIMEOUT_MS) });
     if (!meta.ok) throw new Error('Could not download the photo.');
     const { url, mime_type } = await meta.json();
@@ -47,7 +68,39 @@ export function whatsappRouter({ bot, config }) {
     return { buffer: Buffer.from(await file.arrayBuffer()), mediaType: mime_type };
   }
 
-  // Webhook verification handshake (Meta calls this once when you register the webhook).
+  return { send, sendTemplate, downloadMedia };
+}
+
+/** Turns one webhook message into what the bot understands, or null if it's a type we ignore. */
+export function parseIncoming(m, profileName, transport) {
+  const phone = normalizePhone(m.from, '');
+  if (!phone) return null;
+  const msg = { phone, profileName, waId: m.id, contextId: m.context?.id };
+  switch (m.type) {
+    case 'text':
+      msg.text = m.text?.body || '';
+      break;
+    case 'image':
+      msg.text = m.image?.caption || '';
+      msg.image = () => transport.downloadMedia(m.image.id);
+      break;
+    case 'interactive':
+      msg.payload = m.interactive?.button_reply?.id || m.interactive?.list_reply?.id;
+      break;
+    case 'button': // quick-reply button on a template
+      msg.payload = m.button?.payload || m.button?.text;
+      break;
+    default:
+      return null;
+  }
+  return msg;
+}
+
+export function whatsappRouter({ bot, transport, config }) {
+  const router = express.Router();
+  const wa = config.whatsapp;
+  const seen = new Set(); // Meta sometimes delivers the same message twice
+
   router.get('/webhooks/whatsapp', (req, res) => {
     if (wa.verifyToken && req.query['hub.mode'] === 'subscribe' && req.query['hub.verify_token'] === wa.verifyToken) {
       return res.send(String(req.query['hub.challenge'] || ''));
@@ -56,7 +109,7 @@ export function whatsappRouter({ bot, config }) {
   });
 
   router.post('/webhooks/whatsapp', (req, res) => {
-    if (!wa.token || !wa.phoneNumberId) return res.sendStatus(404);
+    if (!transport) return res.sendStatus(404);
     if (wa.appSecret) {
       const expected = 'sha256=' + crypto.createHmac('sha256', wa.appSecret).update(req.rawBody || '').digest('hex');
       if (!safeEqual(expected, req.get('x-hub-signature-256') || '')) return res.sendStatus(401);
@@ -68,65 +121,20 @@ export function whatsappRouter({ bot, config }) {
         const value = change.value || {};
         const names = Object.fromEntries((value.contacts || []).map((c) => [c.wa_id, c.profile?.name]));
         for (const m of value.messages || []) {
-          const phone = normalizePhone(m.from, '');
-          if (!phone) continue;
-          const msg = { phone, profileName: names[m.from] };
-          if (m.type === 'text') msg.text = m.text?.body;
-          else if (m.type === 'image') msg.image = () => cloudMedia(m.image.id);
-          else if (m.type === 'interactive') msg.text = m.interactive?.button_reply?.title;
-          else continue;
-          runBot(msg, (body) => cloudSend(m.from, body));
+          if (seen.has(m.id)) continue;
+          seen.add(m.id);
+          if (seen.size > 2000) seen.delete(seen.values().next().value);
+
+          const msg = parseIncoming(m, names[m.from], transport);
+          if (!msg) continue;
+          const reply = (text, buttons) => transport.send(m.from, { text, buttons });
+          bot.handle(msg, reply).catch((err) => {
+            console.error('WhatsApp bot error:', err);
+            reply('⚠️ Something went wrong. Please try again.').catch(() => {});
+          });
         }
       }
     }
-  });
-
-  // ---------- Twilio ----------
-
-  function validTwilioSignature(req) {
-    if (!tw.authToken) return true;
-    if (!config.publicUrl) {
-      console.warn('Set PUBLIC_URL so Twilio signatures can be verified.');
-      return false;
-    }
-    const url = config.publicUrl + req.originalUrl;
-    const params = req.body || {};
-    const data = url + Object.keys(params).sort().map((k) => k + params[k]).join('');
-    const expected = crypto.createHmac('sha1', tw.authToken).update(data).digest('base64');
-    return safeEqual(expected, req.get('x-twilio-signature') || '');
-  }
-
-  const twilioAuth = () => 'Basic ' + Buffer.from(`${tw.accountSid}:${tw.authToken}`).toString('base64');
-
-  async function twilioSend(to, body) {
-    const res = await fetch(`https://api.twilio.com/2010-04-01/Accounts/${tw.accountSid}/Messages.json`, {
-      method: 'POST',
-      headers: { Authorization: twilioAuth(), 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: new URLSearchParams({ From: tw.from, To: to, Body: body.slice(0, 1600) }),
-    });
-    if (!res.ok) console.error('Twilio send failed:', res.status, await res.text());
-  }
-
-  async function twilioMedia(url) {
-    const res = await fetch(url, { headers: { Authorization: twilioAuth() }, signal: AbortSignal.timeout(MEDIA_TIMEOUT_MS) });
-    if (!res.ok) throw new Error('Could not download the photo.');
-    return { buffer: Buffer.from(await res.arrayBuffer()), mediaType: res.headers.get('content-type') };
-  }
-
-  router.post('/webhooks/twilio', express.urlencoded({ extended: false }), (req, res) => {
-    if (!tw.accountSid || !tw.authToken || !tw.from) return res.sendStatus(404);
-    if (!validTwilioSignature(req)) return res.sendStatus(401);
-    res.type('text/xml').send('<Response></Response>');
-
-    const b = req.body;
-    const phone = normalizePhone(b.From);
-    if (!phone) return;
-    const msg = { phone, profileName: b.ProfileName, text: b.Body };
-    if (Number(b.NumMedia) > 0 && /^image\//.test(b.MediaContentType0 || '')) {
-      msg.image = () => twilioMedia(b.MediaUrl0);
-      msg.text = '';
-    }
-    runBot(msg, (body) => twilioSend(b.From, body));
   });
 
   return router;

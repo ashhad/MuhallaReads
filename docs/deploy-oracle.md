@@ -104,12 +104,15 @@ The values most people set:
 ```
 COMMUNITY_NAME=Our Muhalla Library
 JOIN_CODE=books2026
+ADMIN_PHONES=919812345678
 ANTHROPIC_API_KEY=sk-ant-...
 ```
 
-`JOIN_CODE` is what neighbours enter to join, so share it in your group. `ANTHROPIC_API_KEY` is
-optional and turns on shelf-photo scanning. Don't add comments after a value on the same line:
-they would become part of the value.
+- `JOIN_CODE`: neighbours send `join books2026` to the bot to get in, so share it in your group.
+- `ADMIN_PHONES`: your own WhatsApp number with country code, so you can send `stats` to the bot.
+- `ANTHROPIC_API_KEY`: optional; turns on shelf-photo scanning.
+
+Don't add comments after a value on the same line: they would become part of the value.
 
 Save with `Ctrl+O`, Enter, `Ctrl+X`. Then restart the app:
 
@@ -119,13 +122,22 @@ sudo systemctl restart muhallareads
 
 For WhatsApp, follow **WhatsApp setup** in the README. Your webhook URL is
 `https://ourmuhallabooks.duckdns.org/webhooks/whatsapp`. The setup script already generated a
-`WHATSAPP_VERIFY_TOKEN` in the settings file: copy that value into Meta's webhook form.
+`WHATSAPP_VERIFY_TOKEN` and filled in `PUBLIC_URL` in the settings file: copy the verify token
+into Meta's webhook form. Leave `WHATSAPP_TEMPLATES=off` until Meta approves the templates in
+[whatsapp-templates.md](whatsapp-templates.md).
+
+To sign in to the website before WhatsApp is set up, create a one-time link on the VM:
+
+```bash
+sudo muhallareads-login 9812345678 "Your name"
+```
 
 ## Everyday tasks
 
 | Task | Command (on the VM) |
 |---|---|
 | Update to the latest code | `cd ~/MuhallaReads && git pull && sudo bash deploy/oracle/setup.sh` |
+| Website sign-in link without WhatsApp | `sudo muhallareads-login 9812345678 "Name"` |
 | See what the app is doing | `journalctl -u muhallareads -f` (Ctrl+C to stop) |
 | Restart | `sudo systemctl restart muhallareads` |
 | List backups | `ls /var/backups/muhallareads` |
@@ -154,10 +166,11 @@ sudo systemctl start muhallareads
   happen. To prevent it, upgrade the account to **Pay As You Go** (Billing → Upgrade). You still
   pay nothing for Always Free resources. Also set a **budget alert** (Billing → Budgets) at, say,
   ₹100, so any accidental charge emails you. Either way, keep a backup copy on your laptop.
-- **WhatsApp:** with Meta's Cloud API, replies to messages people send the bot are free at the
-  time of writing (check Meta's current pricing page). Twilio charges for every message, so Meta
-  is the cheaper choice.
-- **Photo scanning** is the only part that costs money. Each photo is one Claude API call. With
+- **WhatsApp:** replies to people who messaged the bot recently are free (first 1,000 a month).
+  Telling someone about a request while they're away costs about ₹0.14, capped by
+  `MONTHLY_TEMPLATE_LIMIT` (default 200 ≈ ₹27 a month). A pilot typically costs ₹5–15 a month.
+  Send `stats` to the bot to see this month's usage.
+- **Photo scanning** costs money too. Each photo is one Claude API call. With
   the default model that's roughly a few rupees per photo (a rough estimate; check Anthropic's
   pricing page). To make it much cheaper, set `CLAUDE_MODEL=claude-haiku-5-5` (it may miss more
   titles on busy shelves). To turn it off, leave `ANTHROPIC_API_KEY` empty. Typing and barcode

@@ -62,11 +62,9 @@ input[type=checkbox] { width: 1.2rem; height: 1.2rem; padding: 0; flex: none; ac
 .icon-btn { background: none; border: 0; font-size: 1.05rem; cursor: pointer; padding: .4rem; color: var(--muted); }
 
 /* join */
-#join { min-height: 100vh; display: grid; place-items: center; padding: 1.5rem 16px; }
+#signin { min-height: 100vh; display: grid; place-items: center; padding: 1.5rem 16px; }
 .join-card { width: 100%; max-width: 420px; text-align: center; }
 .join-logo { width: 72px; height: 72px; }
-#join-form { display: grid; gap: .8rem; margin: 1.2rem 0; text-align: left; }
-#join-form label { display: grid; gap: .3rem; font-weight: 600; font-size: .9rem; }
 .error { color: #c0392b; min-height: 1.2em; margin: 0; }
 
 /* app shell */
@@ -121,10 +119,6 @@ input[type=checkbox] { width: 1.2rem; height: 1.2rem; padding: 0; flex: none; ac
 .tag { font-size: .72rem; padding: .05rem .45rem; border-radius: 999px; border: 1px solid currentColor; }
 .tag.ok { color: var(--ok); }
 .tag.lent { color: var(--warn); }
-.wa {
-  margin-left: auto; font-weight: 700; font-size: .8rem; text-decoration: none;
-  color: #fff; background: var(--wa); padding: .25rem .7rem; border-radius: 999px;
-}
 .empty { text-align: center; color: var(--muted); padding: 2rem 1rem; display: grid; gap: .8rem; justify-items: center; }
 .actions { display: flex; align-items: center; gap: .3rem; margin-top: .5rem; flex-wrap: wrap; }
 
@@ -155,3 +149,54 @@ input[type=checkbox] { width: 1.2rem; height: 1.2rem; padding: 0; flex: none; ac
   background: var(--text); color: var(--bg); padding: .6rem 1rem; border-radius: 999px;
   font-size: .9rem; max-width: calc(100% - 32px); text-align: center;
 }
+
+/* sign in */
+.privacy-note {
+  margin-top: 1.5rem; text-align: left; font-size: .85rem; color: var(--muted);
+  background: var(--card); border: 1px solid var(--line); border-radius: var(--radius); padding: .8rem;
+}
+.privacy-note strong { display: block; color: var(--text); margin-bottom: .2rem; }
+#wa-signin { margin-top: 1.2rem; background: var(--wa); border-color: var(--wa); color: #fff; }
+
+/* tabs badge */
+.tabs button { position: relative; }
+#badge {
+  position: absolute; top: .3rem; left: calc(50% + .5rem); min-width: 1.1rem; height: 1.1rem; padding: 0 .3rem;
+  border-radius: 999px; background: #d64545; color: #fff; font-size: .7rem; line-height: 1.1rem; text-align: center;
+}
+
+/* requests */
+#view-requests h3:first-child { margin-top: .4rem; }
+.note { font-size: .9rem; font-style: italic; margin-top: .3rem; }
+.tag { white-space: nowrap; }
+.btn.danger { color: #c0392b; }
+.want { margin-left: auto; }
+
+/* chat */
+#thread { display: grid; gap: .8rem; }
+#thread-back { justify-self: start; }
+.shared { margin-top: .6rem; font-size: .9rem; background: var(--card); border: 1px solid var(--ok); border-radius: 10px; padding: .6rem .8rem; }
+.shared a { color: var(--wa); font-weight: 700; }
+.messages { list-style: none; margin: 0; padding: 0; display: grid; gap: .4rem; }
+.messages li {
+  max-width: 80%; justify-self: start; background: var(--card); border: 1px solid var(--line);
+  padding: .5rem .75rem; border-radius: 14px 14px 14px 4px; overflow-wrap: anywhere; white-space: pre-wrap;
+}
+.messages li.mine { justify-self: end; background: var(--brand); color: var(--brand-ink); border-color: var(--brand); border-radius: 14px 14px 4px 14px; }
+.messages li time { display: block; font-size: .7rem; opacity: .7; margin-top: .15rem; }
+.messages li.hint { max-width: none; justify-self: stretch; text-align: center; color: var(--muted); background: none; border: 1px dashed var(--line); }
+
+/* me */
+.me-footer { display: flex; justify-content: space-between; margin: 2rem 0 1rem; }
+#wishes .info { font-size: .95rem; }
+
+/* dialog sheet */
+dialog {
+  width: min(480px, calc(100% - 32px)); border: 1px solid var(--line); border-radius: var(--radius);
+  background: var(--card); color: var(--text); padding: 1.1rem;
+}
+dialog::backdrop { background: rgb(0 0 0 / .45); }
+#sheet-form { display: grid; gap: .7rem; }
+#sheet-form h3 { margin: 0; }
+#sheet-text:empty { display: none; }
+.row.end { flex-direction: row-reverse; justify-content: flex-start; }

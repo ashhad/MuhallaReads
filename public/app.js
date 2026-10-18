@@ -18,12 +18,14 @@ const state = {
   token: store.get('token'),
   me: null,
   config: {},
+  requests: [],
+  thread: null, // id of the open conversation
   tray: [], // books waiting to be added: { title, author, isbn, cover, checked }
   scanner: null,
   scanned: new Set(),
 };
 
-// ---------- api ----------
+// ---------- helpers ----------
 
 async function api(path, opts = {}) {
   const res = await fetch(path, {
@@ -36,8 +38,8 @@ async function api(path, opts = {}) {
   });
   const data = await res.json().catch(() => ({}));
   if (res.status === 401 && state.token) {
-    signOut();
-    throw new Error('Please join again.');
+    signedOut();
+    throw new Error('Please sign in again.');
   }
   if (!res.ok) throw new Error(data.error || 'Something went wrong.');
   return data;
@@ -48,21 +50,41 @@ function toast(msg) {
   t.textContent = msg;
   t.hidden = false;
   clearTimeout(toast.timer);
-  toast.timer = setTimeout(() => (t.hidden = true), 2600);
+  toast.timer = setTimeout(() => (t.hidden = true), 3000);
 }
 
 const waLink = (phone, text) => `https://wa.me/${phone}${text ? `?text=${encodeURIComponent(text)}` : ''}`;
+const fmtDate = (iso) => (iso ? new Date(iso).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' }) : '');
 
 function cover(b) {
   const initials = esc((b.title || '?').replace(/^(the|a|an)\s+/i, '').slice(0, 2));
   const hue = [...(b.title || '')].reduce((h, c) => (h * 31 + c.charCodeAt(0)) % 360, 7);
   const url = b.cover || b.cover_url;
   return `<div class="cover" style="--hue:${hue}">${initials}${
-    url ? `<img src="${esc(url)}" alt="" loading="lazy" onerror="this.remove()">` : ''
+    url ? `<img src="${esc(url)}" alt="" loading="lazy" referrerpolicy="no-referrer" onerror="this.remove()">` : ''
   }</div>`;
 }
 
-// ---------- join ----------
+/** Small bottom sheet: resolves to the entered text (or '' for confirm-only), or null if cancelled. */
+function sheet({ title, text = '', input = null, ok = 'OK' }) {
+  const d = $('#sheet');
+  $('#sheet-title').textContent = title;
+  $('#sheet-text').textContent = text;
+  const inp = $('#sheet-input');
+  inp.hidden = input === null;
+  inp.value = input?.value || '';
+  inp.placeholder = input?.placeholder || '';
+  inp.maxLength = input?.maxLength || 200;
+  $('#sheet-ok').textContent = ok;
+  return new Promise((resolve) => {
+    d.onclose = () => resolve(d.returnValue === 'ok' ? inp.value.trim() : null);
+    d.returnValue = '';
+    d.showModal();
+    if (input !== null) inp.focus();
+  });
+}
+
+// ---------- sign in ----------
 
 async function boot() {
   try {
@@ -76,12 +98,25 @@ async function boot() {
     $$('.community-name').forEach((el) => (el.textContent = c.communityName));
   }
   if (c.stats) $('.stats').textContent = `${c.stats.books} books shared by ${c.stats.members} neighbours`;
-  $('#code-field').hidden = !c.needsCode;
-  $('#code-field input').required = Boolean(c.needsCode);
   $('#photo-mode').hidden = !c.photoScan;
   if (c.whatsappNumber) {
+    $('#wa-signin').href = waLink(c.whatsappNumber, 'login');
+    $('#wa-signin').hidden = false;
     $('#bot-link').href = waLink(c.whatsappNumber, 'hi');
     $('#bot-link').hidden = false;
+  }
+
+  // Sign-in links from the bot look like /#login=CODE
+  const code = new URLSearchParams(location.hash.slice(1)).get('login');
+  if (code) {
+    history.replaceState(null, '', location.pathname);
+    try {
+      const { token } = await api('/api/login', { method: 'POST', body: { code } });
+      state.token = token;
+      store.set('token', token);
+    } catch (ex) {
+      $('#signin .error').textContent = ex.message;
+    }
   }
 
   if (state.token) {
@@ -91,49 +126,57 @@ async function boot() {
       state.me = null;
     }
   }
-  state.me ? showApp() : showJoin();
+  state.me ? showApp() : signedOut();
 }
 
-function showJoin() {
-  $('#join').hidden = false;
-  $('#app').hidden = true;
-}
-
-function showApp() {
-  $('#join').hidden = true;
-  $('#app').hidden = false;
-  $('#me-name').textContent = state.me.name;
-  $('#me-phone').textContent = '+' + state.me.phone;
-  showView('find');
-}
-
-$('#join-form').addEventListener('submit', async (e) => {
-  e.preventDefault();
-  const f = e.target;
-  const err = f.querySelector('.error');
-  err.textContent = '';
-  try {
-    const data = await api('/api/join', {
-      method: 'POST',
-      body: { name: f.name.value, phone: f.phone.value, code: f.code.value },
-    });
-    state.token = data.token;
-    state.me = data.member;
-    store.set('token', data.token);
-    showApp();
-  } catch (ex) {
-    err.textContent = ex.message;
-  }
-});
-
-function signOut() {
+function signedOut() {
   state.token = null;
   state.me = null;
   store.set('token', null);
   stopScanner();
-  showJoin();
+  $('#signin').hidden = false;
+  $('#app').hidden = true;
 }
-$('#logout').addEventListener('click', signOut);
+
+function showApp() {
+  $('#signin').hidden = true;
+  $('#app').hidden = false;
+  $('#me-name').textContent = state.me.name;
+  showView('find');
+  refreshRequests();
+}
+
+$('#logout').addEventListener('click', async () => {
+  await api('/api/logout', { method: 'POST' }).catch(() => {});
+  signedOut();
+});
+
+$('#rename').addEventListener('click', async () => {
+  const name = await sheet({
+    title: 'Your display name',
+    text: 'This is all neighbours see. Adding your block or building helps, e.g. “Ashhad (Block C)”.',
+    input: { value: state.me.name, maxLength: 40 },
+    ok: 'Save',
+  });
+  if (!name) return;
+  try {
+    state.me = (await api('/api/me', { method: 'PATCH', body: { name } })).member;
+    $('#me-name').textContent = state.me.name;
+  } catch (ex) {
+    toast(ex.message);
+  }
+});
+
+$('#delete-account').addEventListener('click', async () => {
+  const ok = await sheet({
+    title: 'Delete your account?',
+    text: 'This removes your account, your books, and all your requests and messages. It cannot be undone.',
+    ok: 'Delete everything',
+  });
+  if (ok === null) return;
+  await api('/api/me', { method: 'DELETE' }).catch((ex) => toast(ex.message));
+  signedOut();
+});
 
 // ---------- navigation ----------
 
@@ -142,7 +185,8 @@ function showView(name) {
   $$('.tabs button').forEach((b) => b.classList.toggle('active', b.dataset.view === name));
   if (name !== 'add') stopScanner();
   if (name === 'find') runSearch();
-  if (name === 'mine') loadMine();
+  if (name === 'requests') showRequestList();
+  if (name === 'me') loadMe();
   window.scrollTo(0, 0);
 }
 $$('.tabs button').forEach((b) => b.addEventListener('click', () => showView(b.dataset.view)));
@@ -166,31 +210,37 @@ async function runSearch() {
   }
   if (q !== $('#search').value.trim()) return; // a newer search is on its way
 
-  const community = state.config.communityName || 'MuhallaReads';
   $('#find-summary').textContent = q
     ? `${results.length} match${results.length === 1 ? '' : 'es'}`
     : results.length ? 'Recently added' : '';
 
   if (!results.length) {
     $('#results').innerHTML = q
-      ? `<li class="empty">Nobody has “${esc(q)}” yet.<br>
-           <a class="btn" target="_blank" rel="noopener" href="${esc(waLink('', `Does anyone have "${q}"? 📚`))}">Ask on WhatsApp</a></li>`
-      : `<li class="empty">No books yet — be the first to add yours!</li>`;
+      ? `<li class="empty">Nobody has “${esc(q)}” yet.<br><button class="btn" id="wish-btn">🔔 Tell me when someone adds it</button></li>`
+      : '<li class="empty">No books yet. Be the first to add yours!</li>';
+    $('#wish-btn')?.addEventListener('click', async () => {
+      await api('/api/wishes', { method: 'POST', body: { query: q } }).catch((ex) => toast(ex.message));
+      toast('🔔 We’ll let you know on WhatsApp.');
+    });
     return;
   }
 
+  const myOpen = new Map(
+    state.requests.filter((r) => r.role === 'borrower' && ['pending', 'accepted'].includes(r.status)).map((r) => [r.book.id, r]),
+  );
   $('#results').innerHTML = results
     .map((g) => {
       const owners = g.copies
         .map((c) => {
           const mine = c.owner.id === state.me.id;
+          const open = myOpen.get(c.bookId);
           const status = c.status === 'lent' ? '<span class="tag lent">lent out</span>' : '<span class="tag ok">available</span>';
-          const ask = mine
-            ? ''
-            : `<a class="wa" target="_blank" rel="noopener" href="${esc(
-                waLink(c.owner.phone, `Hi ${c.owner.name}! Could I borrow "${g.title}"? (found it on ${community})`),
-              )}">Ask</a>`;
-          return `<div class="owner"><span>${mine ? 'You' : esc(c.owner.name)}</span>${status}${ask}</div>`;
+          let action = '';
+          if (!mine && open) action = `<span class="tag">${open.status === 'pending' ? 'requested' : 'borrowing'}</span>`;
+          else if (!mine && c.status !== 'lent') {
+            action = `<button class="btn small want" data-book="${c.bookId}" data-title="${esc(g.title)}" data-owner="${esc(c.owner.name)}">Request</button>`;
+          }
+          return `<div class="owner"><span>${mine ? 'You' : esc(c.owner.name)}</span>${status}${action}</div>`;
         })
         .join('');
       return `<li class="book">${cover(g)}<div class="info">
@@ -199,7 +249,161 @@ async function runSearch() {
           <div class="owners">${owners}</div></div></li>`;
     })
     .join('');
+
+  $$('#results .want').forEach((btn) =>
+    btn.addEventListener('click', async () => {
+      const note = await sheet({
+        title: `Borrow “${btn.dataset.title}”?`,
+        text: `${btn.dataset.owner} will get your request on WhatsApp. Your number is not shared.`,
+        input: { placeholder: 'Add a note (optional), e.g. “Could I pick it up Sunday?”' },
+        ok: 'Send request',
+      });
+      if (note === null) return;
+      try {
+        await api('/api/requests', { method: 'POST', body: { bookId: Number(btn.dataset.book), note } });
+        toast(`Request sent to ${btn.dataset.owner}.`);
+        await refreshRequests();
+        runSearch();
+      } catch (ex) {
+        toast(ex.message);
+      }
+    }),
+  );
 }
+
+// ---------- requests & private chat ----------
+
+async function refreshRequests() {
+  try {
+    ({ requests: state.requests } = await api('/api/requests'));
+  } catch {
+    return;
+  }
+  const waiting = state.requests.filter((r) => r.role === 'owner' && r.status === 'pending').length;
+  $('#badge').hidden = !waiting;
+  $('#badge').textContent = waiting;
+}
+
+const STATUS_TEXT = { pending: 'waiting', accepted: 'on loan', declined: 'declined', cancelled: 'cancelled', returned: 'returned' };
+
+function requestCard(r) {
+  const who = r.role === 'owner' ? `${esc(r.other.name)} → you` : `from ${esc(r.other.name)}`;
+  const buttons = [];
+  if (r.role === 'owner' && r.status === 'pending') {
+    buttons.push(`<button class="btn small primary" data-act="accept" data-id="${r.id}">Accept</button>`);
+    buttons.push(`<button class="btn small" data-act="decline" data-id="${r.id}">Decline</button>`);
+  }
+  if (r.status === 'accepted') buttons.push(`<button class="btn small primary" data-chat="${r.id}">💬 Chat</button>`);
+  if (r.role === 'owner' && r.status === 'accepted') {
+    buttons.push(`<button class="btn small" data-act="returned" data-id="${r.id}">Got it back</button>`);
+  }
+  if (r.role === 'borrower' && r.status === 'pending') {
+    buttons.push(`<button class="btn small" data-act="cancel" data-id="${r.id}">Cancel</button>`);
+  }
+  const due = r.status === 'accepted' && r.dueAt ? ` · due ${fmtDate(r.dueAt)}` : '';
+  return `<li class="book">${cover(r.book)}<div class="info">
+      <div class="title">${esc(r.book.title)}</div>
+      <div class="author">${who} · <span class="tag ${r.status === 'accepted' ? 'lent' : ''}">${STATUS_TEXT[r.status]}</span>${due}</div>
+      ${r.note && r.status === 'pending' ? `<div class="note">“${esc(r.note)}”</div>` : ''}
+      ${buttons.length ? `<div class="actions">${buttons.join('')}</div>` : ''}
+    </div></li>`;
+}
+
+async function showRequestList() {
+  $('#thread').hidden = true;
+  $('#requests-list').hidden = false;
+  state.thread = null;
+  await refreshRequests();
+  const rs = state.requests;
+  const sections = [
+    ['Asking for your books', rs.filter((r) => r.role === 'owner' && r.status === 'pending')],
+    ['You lent', rs.filter((r) => r.role === 'owner' && r.status === 'accepted')],
+    ['You asked for', rs.filter((r) => r.role === 'borrower' && ['pending', 'accepted'].includes(r.status))],
+    ['Recently closed', rs.filter((r) => ['declined', 'cancelled', 'returned'].includes(r.status))],
+  ].filter(([, list]) => list.length);
+
+  $('#requests-list').innerHTML = sections.length
+    ? sections.map(([title, list]) => `<h3>${title}</h3><ul class="list">${list.map(requestCard).join('')}</ul>`).join('')
+    : '<p class="empty">No requests yet. Find a book and tap <b>Request</b>. The owner gets it on WhatsApp.</p>';
+
+  $$('#requests-list [data-act]').forEach((btn) =>
+    btn.addEventListener('click', async () => {
+      btn.disabled = true;
+      try {
+        await api(`/api/requests/${btn.dataset.id}/${btn.dataset.act}`, { method: 'POST' });
+        if (btn.dataset.act === 'accept') toast('Accepted! Use Chat to arrange the hand-over.');
+      } catch (ex) {
+        toast(ex.message);
+      }
+      showRequestList();
+    }),
+  );
+  $$('#requests-list [data-chat]').forEach((btn) => btn.addEventListener('click', () => openThread(Number(btn.dataset.chat))));
+}
+
+async function openThread(id) {
+  state.thread = id;
+  $('#requests-list').hidden = true;
+  $('#thread').hidden = false;
+  let data;
+  try {
+    data = await api(`/api/requests/${id}/messages`);
+  } catch (ex) {
+    toast(ex.message);
+    return showRequestList();
+  }
+  const r = data.request;
+  $('#thread-head').innerHTML = `<div class="book small">${cover(r.book)}<div class="info">
+      <div class="title">${esc(r.book.title)}</div>
+      <div class="author">${r.role === 'owner' ? 'Lending to' : 'Borrowing from'} ${esc(r.other.name)}${r.dueAt ? ` · due ${fmtDate(r.dueAt)}` : ''}</div></div></div>
+    ${r.otherPhone ? `<div class="shared">📞 ${esc(r.other.name)} shared their number: <a target="_blank" rel="noopener" href="${esc(waLink(r.otherPhone))}">+${esc(r.otherPhone)}</a></div>` : ''}`;
+
+  $('#thread-messages').innerHTML = data.messages.length
+    ? data.messages.map((m) => `<li class="${m.mine ? 'mine' : ''}">${esc(m.body)}<time>${fmtDate(m.at)}</time></li>`).join('')
+    : `<li class="hint">Say hello and arrange the hand-over. Messages are also delivered on WhatsApp. Numbers stay private.</li>`;
+  $('#thread-messages').lastElementChild?.scrollIntoView({ block: 'end' });
+
+  const open = r.status === 'accepted';
+  $('#thread-form').hidden = !open;
+  $('#thread-actions').innerHTML =
+    (open && !r.iShared ? `<button class="btn small" data-share>📞 Share my number with ${esc(r.other.name)}</button>` : '') +
+    (open && r.iShared ? '<span class="muted small">You shared your number.</span>' : '') +
+    `<button class="btn small danger" data-block>Block</button>`;
+  $('#thread-actions [data-share]')?.addEventListener('click', async () => {
+    const ok = await sheet({
+      title: 'Share your number?',
+      text: `Only ${r.other.name} will see it, so you can call or WhatsApp each other directly.`,
+      ok: 'Share',
+    });
+    if (ok === null) return;
+    await api(`/api/requests/${id}/share`, { method: 'POST' }).catch((ex) => toast(ex.message));
+    openThread(id);
+  });
+  $('#thread-actions [data-block]').addEventListener('click', async () => {
+    const ok = await sheet({
+      title: `Block ${r.other.name}?`,
+      text: 'They won’t be able to request your books or message you, and you won’t be able to request theirs.',
+      ok: 'Block',
+    });
+    if (ok === null) return;
+    await api(`/api/requests/${id}/block`, { method: 'POST' }).catch((ex) => toast(ex.message));
+    showRequestList();
+  });
+}
+
+$('#thread-back').addEventListener('click', showRequestList);
+$('#thread-form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const body = $('#thread-input').value.trim();
+  if (!body || !state.thread) return;
+  try {
+    await api(`/api/requests/${state.thread}/messages`, { method: 'POST', body: { body } });
+    $('#thread-input').value = '';
+    openThread(state.thread);
+  } catch (ex) {
+    toast(ex.message);
+  }
+});
 
 // ---------- add ----------
 
@@ -233,7 +437,7 @@ $('#type-form').addEventListener('submit', async (e) => {
   let results = [];
   try {
     ({ results } = await api(`/api/lookup?q=${encodeURIComponent(text)}`));
-  } catch { /* offline lookups are fine — the typed entry is still offered */ }
+  } catch { /* offline lookups are fine; the typed entry is still offered */ }
 
   const typed = /^[\d\s-]{9,}[\dXx]?$/.test(text) ? null : parseTyped(text);
   const items = [...results];
@@ -263,7 +467,7 @@ $('#type-form').addEventListener('submit', async (e) => {
 
 async function startScanner() {
   if (state.scanner) return;
-  if (!window.Html5Qrcode) return toast('Scanner is still loading — try again.');
+  if (!window.Html5Qrcode) return toast('Scanner is still loading. Try again.');
   const F = window.Html5QrcodeSupportedFormats;
   state.scanner = new window.Html5Qrcode('reader', {
     formatsToSupport: [F.EAN_13, F.EAN_8, F.UPC_A],
@@ -277,7 +481,7 @@ async function startScanner() {
       onBarcode,
       () => {},
     );
-  } catch (ex) {
+  } catch {
     state.scanner = null;
     toast('Could not open the camera. Allow camera access, or use Type instead.');
   }
@@ -423,12 +627,12 @@ $('#add-all').addEventListener('click', async () => {
   }
 });
 
-// ---------- my books ----------
+// ---------- me: my books & wishes ----------
 
-async function loadMine() {
-  let books;
+async function loadMe() {
+  let books, wishes;
   try {
-    ({ books } = await api('/api/my-books'));
+    [{ books }, { wishes }] = await Promise.all([api('/api/my-books'), api('/api/wishes')]);
   } catch (ex) {
     return toast(ex.message);
   }
@@ -441,27 +645,44 @@ async function loadMine() {
             ${b.author ? `<div class="author">${esc(b.author)}</div>` : ''}
             <div class="actions">
               <button class="btn small ${b.status === 'lent' ? 'warn' : ''}" data-toggle="${b.id}" data-status="${b.status}">
-                ${b.status === 'lent' ? '🤝 Lent out — mark returned' : '✅ Available — mark lent'}</button>
+                ${b.status === 'lent' ? '🤝 Lent out: mark returned' : '✅ Available: mark lent'}</button>
               <button class="icon-btn" data-del="${b.id}" aria-label="Remove">🗑️</button>
             </div></div></li>`,
         )
         .join('')
     : '<li class="empty">You haven’t added any books yet.</li>';
 
+  $('#wishes').innerHTML = wishes.length
+    ? wishes
+        .map((w) => `<li class="book small"><div class="info">🔔 ${esc(w.query)}</div><button class="icon-btn" data-unwish="${w.id}" aria-label="Remove">✕</button></li>`)
+        .join('')
+    : '<li class="muted small">Nothing. When a search finds nothing, tap “Tell me when someone adds it”.</li>';
+
   $$('#mine [data-toggle]').forEach((btn) =>
     btn.addEventListener('click', async () => {
       const status = btn.dataset.status === 'lent' ? 'available' : 'lent';
       await api(`/api/books/${btn.dataset.toggle}`, { method: 'PATCH', body: { status } }).catch((ex) => toast(ex.message));
-      loadMine();
+      loadMe();
     }),
   );
   $$('#mine [data-del]').forEach((btn) =>
     btn.addEventListener('click', async () => {
-      if (!confirm('Remove this book from the catalogue?')) return;
+      if ((await sheet({ title: 'Remove this book from the catalogue?', ok: 'Remove' })) === null) return;
       await api(`/api/books/${btn.dataset.del}`, { method: 'DELETE' }).catch((ex) => toast(ex.message));
-      loadMine();
+      loadMe();
+    }),
+  );
+  $$('#wishes [data-unwish]').forEach((btn) =>
+    btn.addEventListener('click', async () => {
+      await api(`/api/wishes/${btn.dataset.unwish}`, { method: 'DELETE' }).catch((ex) => toast(ex.message));
+      loadMe();
     }),
   );
 }
+
+// A sign-in link opened in a tab that already shows the site only changes the #hash.
+window.addEventListener('hashchange', () => {
+  if (location.hash.includes('login=')) boot();
+});
 
 boot();

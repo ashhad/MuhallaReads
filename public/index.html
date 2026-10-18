@@ -4,29 +4,32 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <title>MuhallaReads</title>
-  <meta name="description" content="Our neighbourhood library — see who has which book and share yours.">
+  <meta name="description" content="Our neighbourhood library: see which books neighbours have and borrow them privately.">
   <meta name="theme-color" content="#7a3e1d">
+  <meta name="referrer" content="no-referrer">
   <link rel="manifest" href="/manifest.webmanifest">
   <link rel="icon" href="/icon.svg" type="image/svg+xml">
   <link rel="apple-touch-icon" href="/icon.svg">
   <link rel="stylesheet" href="/style.css">
 </head>
 <body>
-  <!-- Join -->
-  <section id="join" class="screen" hidden>
+  <!-- Sign in -->
+  <section id="signin" class="screen" hidden>
     <div class="join-card">
       <img src="/icon.svg" alt="" class="join-logo">
       <h1 class="community-name">MuhallaReads</h1>
-      <p class="muted">Our neighbourhood library. Add the books you own, find the ones you need.</p>
+      <p class="muted">Our neighbourhood library. Share the books you own, borrow the ones you need.</p>
       <p class="muted small stats"></p>
-      <form id="join-form">
-        <label>Your name<input name="name" autocomplete="name" required maxlength="60"></label>
-        <label>WhatsApp number<input name="phone" type="tel" autocomplete="tel" required placeholder="+91 98xxxxxxxx"></label>
-        <label id="code-field" hidden>Community code<input name="code" autocomplete="off"></label>
-        <button class="btn primary" type="submit">Join</button>
-        <p class="error" role="alert"></p>
-      </form>
-      <p class="muted small">Your number is shown only to members, so they can message you to borrow a book.</p>
+      <a id="wa-signin" class="btn primary wide" target="_blank" rel="noopener" hidden>Sign in with WhatsApp</a>
+      <p id="signin-help" class="muted small">
+        Send <strong>login</strong> to the library’s WhatsApp number and tap the link it sends back.
+      </p>
+      <p class="error" role="alert"></p>
+      <div class="privacy-note">
+        <strong>🔒 Private by design</strong>
+        Neighbours only see the name you choose. Your phone number is never shown to anyone unless you
+        decide to share it with one person.
+      </div>
     </div>
   </section>
 
@@ -34,7 +37,7 @@
   <section id="app" class="screen" hidden>
     <header class="topbar">
       <span class="brand"><img src="/icon.svg" alt=""><span class="community-name">MuhallaReads</span></span>
-      <a id="bot-link" class="chip" hidden target="_blank" rel="noopener">WhatsApp bot</a>
+      <a id="bot-link" class="chip" hidden target="_blank" rel="noopener">WhatsApp</a>
     </header>
 
     <!-- Find -->
@@ -65,7 +68,7 @@
 
       <div id="panel-scan" class="panel" hidden>
         <div id="reader"></div>
-        <p class="muted small">Point the camera at the barcode on the back cover. Scan as many books as you like — each one lands in the list below.</p>
+        <p class="muted small">Point the camera at the barcode on the back cover. Scan as many books as you like. Each one lands in the list below.</p>
         <button id="stop-scan" class="btn">Done scanning</button>
       </div>
 
@@ -83,25 +86,60 @@
       <p id="add-message" class="notice" hidden></p>
     </main>
 
-    <!-- Mine -->
-    <main id="view-mine" class="view" hidden>
+    <!-- Requests -->
+    <main id="view-requests" class="view" hidden>
+      <div id="requests-list"></div>
+      <div id="thread" hidden>
+        <button id="thread-back" class="btn small">‹ Back</button>
+        <div id="thread-head"></div>
+        <ul id="thread-messages" class="messages"></ul>
+        <form id="thread-form" class="row">
+          <input id="thread-input" placeholder="Write a message…" autocomplete="off" maxlength="1000">
+          <button class="btn primary" type="submit">Send</button>
+        </form>
+        <div id="thread-actions" class="actions"></div>
+      </div>
+    </main>
+
+    <!-- Me -->
+    <main id="view-me" class="view" hidden>
       <div class="me">
         <div>
+          <div class="muted small">Neighbours see you as</div>
           <strong id="me-name"></strong>
-          <div class="muted small" id="me-phone"></div>
         </div>
-        <button id="logout" class="btn small">Sign out</button>
+        <button id="rename" class="btn small">Change</button>
       </div>
       <h2>My books <span id="mine-count" class="muted"></span></h2>
       <ul id="mine" class="list"></ul>
+      <h3>Waiting for</h3>
+      <ul id="wishes" class="list compact"></ul>
+      <div class="me-footer">
+        <button id="logout" class="btn small">Sign out</button>
+        <button id="delete-account" class="btn small danger">Delete my account</button>
+      </div>
     </main>
 
     <nav class="tabs">
       <button data-view="find" class="active"><span>🔎</span>Find</button>
       <button data-view="add"><span>➕</span>Add</button>
-      <button data-view="mine"><span>📚</span>My books</button>
+      <button data-view="requests"><span>🤝</span>Requests<b id="badge" hidden></b></button>
+      <button data-view="me"><span>📚</span>Me</button>
     </nav>
   </section>
+
+  <dialog id="sheet">
+    <form method="dialog" id="sheet-form">
+      <h3 id="sheet-title"></h3>
+      <p id="sheet-text" class="muted small"></p>
+      <input id="sheet-input" autocomplete="off">
+      <!-- OK comes first so Enter confirms; CSS shows it on the right -->
+      <div class="row end">
+        <button class="btn primary" value="ok" id="sheet-ok">OK</button>
+        <button class="btn" value="cancel" formnovalidate>Cancel</button>
+      </div>
+    </form>
+  </dialog>
 
   <div id="toast" role="status" hidden></div>
 

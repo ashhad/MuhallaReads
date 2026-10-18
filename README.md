@@ -1,133 +1,135 @@
 # 📚 MuhallaReads
 
-A neighbourhood library catalogue. Everyone adds the books they own; anyone looking for a book
-searches and sees who has it, with a one-tap WhatsApp button to ask to borrow it.
+A private neighbourhood library that lives in WhatsApp. Neighbours list the books they own, find
+the ones they need, and borrow them from each other. **Nobody's phone number is ever shown to
+anyone** unless they choose to share it with one person.
 
-- **Web app** (works on any phone, installable to the home screen)
-  - **Find**: search by title, author or ISBN. Each result shows who has a copy, whether it is
-    available or lent out, and an **Ask** button that opens WhatsApp with a ready-made message.
-    If nobody has it, an **Ask on WhatsApp** button lets you post the request to your group.
-  - **Add**, three ways:
-    - **Type**: a title, `Title by Author`, or an ISBN. Suggestions come from Open Library.
-    - **Scan barcodes**: point the camera at the barcode on the back. Scan one book or a whole
-      stack in a row; each one lands in a "Ready to add" list.
-    - **Shelf photo**: photograph a cover, a pile or a whole shelf. The app reads the titles and
-      lists them for you to tick and add. Needs an Anthropic API key (see below).
-  - **My books**: mark a book as lent out or returned, or remove it.
-- **WhatsApp bot** (optional): the same features over chat.
+## How it works
 
-```
-hi                                → help
-dune                              → who has Dune? (any text is a search)
-add The Alchemist by Paulo Coelho → add a book
-add 9780062315007                 → add by ISBN
-add                               → add several, one per line
-Sapiens
-Ikigai by Héctor García
-[send a photo]                    → adds every book it can read in the photo
-my books                          → your list with numbers
-lent 12 / back 12 / remove 12     → manage your books
-undo                              → remove the books you just added
-```
+Everything happens in a chat with the library's WhatsApp number, plus an optional website for
+browsing and scanning books. Nothing to install.
 
-People are identified by their WhatsApp number, so the web app and the bot share the same
-account automatically.
+1. **Join:** message the library's number (with the community code, if one is set). Neighbours
+   see only the display name you choose, e.g. "Ayesha (Block C)".
+2. **Add books:** type `add Dune by Frank Herbert`, send an ISBN, or send a **photo of your
+   shelf**. On the website you can also scan barcodes one after another.
+3. **Find:** type any title or author. Results show which neighbours have it.
+4. **Request:** tap **Ask Ayesha** (or send `want 12`). Ayesha gets a WhatsApp message with
+   **Accept / Decline** buttons. Neither number is revealed.
+5. **Arrange the hand-over** in a private chat relayed by the bot (`msg 7 …`, or simply
+   swipe-reply). Either person can tap **Share my number** to share it with that one person.
+6. **Return:** the borrower gets a reminder before the due date, and the owner sends
+   `returned 7` (or taps *Got it back* on the website).
+
+Also available: **notify me** (be told when a book you searched for gets added), `block`,
+`requests`, `my books`, `undo`, `name …`, `delete me` (removes your account and all your data),
+and `login` (sends a one-time link that signs you into the website, with no password and no phone
+number entry).
+
+### Privacy
+
+- Phone numbers are stored only on your server, so the bot can message people. The website and
+  the bot never show them, except a number its owner explicitly shared with one person.
+- Messages between neighbours go through the bot, tied to a specific book request. People can't
+  message each other out of the blue, and either side can block the other.
+- Anyone can delete their account and data at any time (`delete me`).
+- The bot never posts in groups and never sends promotions.
+
+### Cost
+
+Hosting can be free (see [Oracle Cloud guide](docs/deploy-oracle.md)). WhatsApp is pay-per-message,
+and the app is built to stay within the free allowance most of the time:
+
+- Replies to someone who messaged the bot in the last 24 hours are free (first 1,000 a month).
+- Telling someone about a request while they're away uses one pre-approved **utility template**
+  (about ₹0.14 in India). They get at most one while away; the rest wait until they're back.
+- A monthly cap (`MONTHLY_TEMPLATE_LIMIT`, default 200 ≈ ₹27) stops paid messages entirely.
+
+A 50-household pilot should cost roughly ₹5–15 a month. Admins can send `stats` to the bot to
+see this month's usage. Photo scanning (optional) is billed separately by Anthropic.
 
 ## Run it
 
-Needs **Node.js 22.13 or newer**. There's no separate database server: data is kept in a
-SQLite file under `data/`.
+Needs **Node.js 22.13 or newer**. Data is kept in a single SQLite file under `data/`.
 
 ```bash
 npm install
-cp .env.example .env    # optional: edit settings
+cp .env.example .env    # then fill it in
 npm start               # http://localhost:3000
 npm test
 ```
 
-The camera (barcode scanning) only works over **https** or on `localhost`, so deploy behind
-HTTPS.
+To try the website without WhatsApp, create a sign-in link from the command line:
 
-### Deploy
+```bash
+npm run login-link -- 9800000001 "Ayesha (Block C)"
+```
+
+## Deploy
 
 **Free option:** [Oracle Cloud Always Free VM](docs/deploy-oracle.md). A step-by-step guide and a
 one-command setup script (`deploy/oracle/setup.sh`) cover HTTPS, auto-restart and daily backups.
 
-Any other host that runs Node or Docker and keeps a persistent disk also works, for example
-Railway, Render (paid plan with a disk), Fly.io, or a small VPS.
+Any other host that runs Node or Docker and keeps a persistent disk also works:
 
 ```bash
 docker build -t muhallareads .
 docker run -p 3000:3000 -v muhalla-data:/data --env-file .env muhallareads
 ```
 
-Back up the `data/` folder (or the `/data` volume): it holds the whole catalogue.
+The camera (barcode scanning) only works over **https**.
+
+## WhatsApp setup (Meta Cloud API)
+
+You need a phone number that isn't already on WhatsApp, e.g. a spare family SIM. It only has to
+receive one verification SMS or call.
+
+1. At <https://developers.facebook.com> create an app (type *Business*) → add **WhatsApp**.
+2. In *WhatsApp → API Setup*, add your phone number and verify it. Set a two-step verification
+   PIN and keep it safe. Copy the **Phone number ID**.
+3. Create a **permanent access token**: Business settings → System users → add a user → generate
+   a token with `whatsapp_business_messaging` and `whatsapp_business_management`. Copy the
+   **App secret** from *App settings → Basic*.
+4. Fill in `.env`: `WHATSAPP_TOKEN`, `WHATSAPP_PHONE_NUMBER_ID`, `WHATSAPP_APP_SECRET`,
+   `WHATSAPP_VERIFY_TOKEN` (any random string), `WHATSAPP_DISPLAY_NUMBER` (the bot's number),
+   `PUBLIC_URL` and `ADMIN_PHONES` (your own number).
+5. In *WhatsApp → Configuration*, set the webhook URL to `https://YOUR-DOMAIN/webhooks/whatsapp`
+   with the same verify token, and subscribe to the **messages** field.
+6. Submit the four message templates in [docs/whatsapp-templates.md](docs/whatsapp-templates.md).
+   Once they're approved, set `WHATSAPP_TEMPLATES=on`.
+7. Add a payment method in WhatsApp Manager (needed once paid templates start), and share the
+   bot's number and community code in your community group.
 
 ## Settings
 
-All optional; see `.env.example`.
+See `.env.example` for all of them. The main ones:
 
 | Variable | What it does |
 |---|---|
 | `COMMUNITY_NAME` | Name shown in the app and the bot |
-| `JOIN_CODE` | Shared code people need to join. Leave empty for an open catalogue |
-| `DEFAULT_COUNTRY_CODE` | Added to local 10-digit numbers (default `91`) |
-| `ANTHROPIC_API_KEY` | Turns on **Shelf photo** and WhatsApp photo adding |
-| `GOOGLE_BOOKS_API_KEY` | Fallback ISBN lookups get their own quota |
+| `JOIN_CODE` | Code neighbours send (`join <code>`) to get in. Empty = open |
+| `ADMIN_PHONES` | Numbers allowed to use `stats`, `members`, `remove member <id>` |
+| `LOAN_DAYS` | Loan length before reminders (default 21) |
+| `MONTHLY_TEMPLATE_LIMIT` | Cap on paid WhatsApp messages per month (default 200) |
+| `WHATSAPP_TEMPLATES` | `off` until Meta approves the templates |
+| `ANTHROPIC_API_KEY` | Turns on shelf-photo recognition |
 
-### Photo recognition
+Photos are read by Claude (`claude-opus-5-5` by default; change it with `CLAUDE_MODEL`). Each
+photo is one API call. Requests opt in to Anthropic's server-side fallback (`fallbacks: "default"`),
+so if the main model declines a photo, another model retries it.
 
-Photos are read by Claude (`claude-opus-5-5` by default; change it with `CLAUDE_MODEL`).
-Get an API key at <https://console.anthropic.com>, then set `ANTHROPIC_API_KEY`. Each photo is
-one API call. The browser shrinks photos to 2000px before uploading, and WhatsApp compresses
-them too. Requests opt in to Anthropic's server-side fallback (`fallbacks: "default"`), so if the
-main model declines a photo, another model retries it automatically.
-
-## WhatsApp setup
-
-WhatsApp doesn't let bots join group chats, so the bot works as a 1:1 chat. Share its number in
-your community group ("message this number to search or add books"). The "Ask" buttons open
-a normal chat with the book's owner.
-
-Pick **one** of these options.
-
-### Option A: Meta WhatsApp Cloud API (official)
-
-1. At <https://developers.facebook.com> create an app → add the **WhatsApp** product.
-2. From *WhatsApp → API Setup*, copy the **Phone number ID** and create a **permanent access token**
-   (System User token with `whatsapp_business_messaging`). Copy the **App secret** from
-   *App settings → Basic*.
-3. Set `WHATSAPP_TOKEN`, `WHATSAPP_PHONE_NUMBER_ID`, `WHATSAPP_APP_SECRET`,
-   `WHATSAPP_VERIFY_TOKEN` (any random string) and `WHATSAPP_DISPLAY_NUMBER` (the bot's number).
-4. In *WhatsApp → Configuration*, set the webhook URL to `https://YOUR-DOMAIN/webhooks/whatsapp`
-   with the same verify token, and subscribe to the **messages** field.
-
-The test number Meta gives you can only message up to 5 numbers you register. Add a real number
-to the WhatsApp Business account to open it to everyone.
-
-### Option B: Twilio
-
-1. In the Twilio console, open *Messaging → Try it out → Send a WhatsApp message* (sandbox) or
-   register a WhatsApp sender.
-2. Set `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, `TWILIO_WHATSAPP_FROM` (e.g.
-   `whatsapp:+14155238886`) and `PUBLIC_URL` (your https base URL).
-3. Set the incoming-message webhook to `https://YOUR-DOMAIN/webhooks/twilio` (HTTP POST).
-
-With the sandbox, each person first sends the sandbox's `join <word>` message to Twilio's number.
-
-## How it works
+## Code map
 
 ```
-public/        web app: plain HTML/CSS/JS, no build step
-src/server.js  Express app and JSON API
-src/db.js      SQLite storage (node:sqlite) and catalogue search
-src/lookup.js  book details from Open Library, with Google Books as fallback
-src/vision.js  finding books in photos with Claude
-src/bot.js     WhatsApp bot commands
-src/whatsapp.js  webhooks for the Meta Cloud API and Twilio
+public/           website: plain HTML/CSS/JS, no build step
+src/server.js     Express app and JSON API
+src/bot.js        WhatsApp commands
+src/library.js    requests, loans, private chat, wishlist, reminders
+src/notifier.js   cheapest way to reach someone (free reply / one template / wait)
+src/whatsapp.js   Meta Cloud API: sending, webhook
+src/db.js         SQLite storage (node:sqlite)
+src/lookup.js     book details from Open Library, with Google Books as fallback
+src/vision.js     finding books in photos with Claude
+scripts/          admin helpers
+deploy/oracle/    free-hosting setup script
 ```
-
-**Privacy:** members' WhatsApp numbers are visible to other members so they can message each
-other. That is the point of the app. Set a `JOIN_CODE` so only your community can get in.
-Logging in from another device uses the same name, number and code. There are no passwords,
-which suits a trusted neighbourhood group but not a public site.

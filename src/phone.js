@@ -17,7 +17,3 @@ export function normalizePhone(input, defaultCountryCode = config.defaultCountry
   return digits.length >= 8 && digits.length <= 15 ? digits : null;
 }
 
-/** A wa.me link that opens a WhatsApp chat with `phone`, optionally with a pre-filled message. */
-export function waLink(phone, text) {
-  return `https://wa.me/${phone}` + (text ? `?text=${encodeURIComponent(text)}` : '');
-}

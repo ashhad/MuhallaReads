@@ -1,14 +1,15 @@
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import express from 'express';
-import { config, visionEnabled } from './config.js';
+import { config, visionEnabled, whatsappEnabled } from './config.js';
 import { openDb } from './db.js';
 import { normalizeIsbn, looksLikeIsbn } from './isbn.js';
 import * as lookup from './lookup.js';
-import { normalizePhone } from './phone.js';
 import { identifyBooks, parseDataUrl, VisionError } from './vision.js';
-import { createBot } from './bot.js';
-import { whatsappRouter } from './whatsapp.js';
+import { createBot, cleanName } from './bot.js';
+import { createLibrary, LibraryError } from './library.js';
+import { createNotifier } from './notifier.js';
+import { createMetaTransport, whatsappRouter } from './whatsapp.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const root = path.join(here, '..');
@@ -20,16 +21,21 @@ class HttpError extends Error {
   }
 }
 
-const publicMember = (m) => ({ id: m.id, name: m.name, phone: m.phone });
-
 export function createApp({ store, deps = {}, settings = config } = {}) {
   const enrichAll = deps.enrichAll || lookup.enrichAll;
   const identify = deps.identifyBooks || identifyBooks;
   const lookupIsbn = deps.lookupIsbn || lookup.lookupIsbn;
   const searchBooks = deps.searchBooks || lookup.searchBooks;
   const canSeePhotos = deps.identifyBooks ? () => true : visionEnabled;
+  const transport =
+    deps.transport !== undefined ? deps.transport : whatsappEnabled(settings) ? createMetaTransport(settings.whatsapp) : null;
+
+  const notifier = createNotifier({ store, transport, settings });
+  const library = createLibrary({ store, notifier, settings });
+  const bot = createBot({ store, library, notifier, enrichAll, identifyBooks: identify, settings });
 
   const app = express();
+  app.locals.library = library;
   app.disable('x-powered-by');
   app.use(
     express.json({
@@ -39,53 +45,65 @@ export function createApp({ store, deps = {}, settings = config } = {}) {
       },
     }),
   );
-
-  const bot = createBot({ store, enrichAll, identifyBooks: identify, settings });
-  app.use(whatsappRouter({ bot, config: settings }));
+  app.use(whatsappRouter({ bot, transport, config: settings }));
 
   // ---------- public ----------
 
   app.get('/api/config', (_req, res) => {
     res.json({
       communityName: settings.communityName,
-      needsCode: Boolean(settings.joinCode),
       photoScan: canSeePhotos(),
       whatsappNumber: settings.whatsapp?.displayNumber || '',
       stats: store.stats(),
     });
   });
 
-  app.post('/api/join', (req, res) => {
-    const name = String(req.body?.name || '').trim().slice(0, 60);
-    const phone = normalizePhone(req.body?.phone);
-    if (!name) throw new HttpError(400, 'Please enter your name.');
-    if (!phone) throw new HttpError(400, 'Please enter a valid WhatsApp number.');
-    if (settings.joinCode && String(req.body?.code || '').trim() !== settings.joinCode) {
-      throw new HttpError(403, 'That community code is not right.');
-    }
-    const member = store.upsertMember({ name, phone });
-    res.json({ token: member.token, member: publicMember(member) });
+  // Sign-in links come from the WhatsApp bot ("login"), so the web app never asks for a phone number.
+  app.post('/api/login', (req, res) => {
+    const memberId = store.consumeLoginCode(req.body?.code);
+    if (!memberId) throw new HttpError(401, 'That sign-in link has expired. Send "login" to the bot for a new one.');
+    res.json({ token: store.createSession(memberId) });
   });
 
   // ---------- members only ----------
 
   const auth = (req, _res, next) => {
-    const token = (req.get('authorization') || '').replace(/^Bearer\s+/i, '');
-    req.member = store.memberByToken(token);
-    if (!req.member) throw new HttpError(401, 'Please join first.');
+    req.token = (req.get('authorization') || '').replace(/^Bearer\s+/i, '');
+    req.member = store.memberBySession(req.token);
+    if (!req.member) throw new HttpError(401, 'Please sign in.');
     next();
   };
+  const api = express.Router();
+  api.use(auth);
+  app.use('/api', api);
 
-  app.get('/api/me', auth, (req, res) => res.json({ member: publicMember(req.member) }));
+  api.get('/me', (req, res) => res.json({ member: { id: req.member.id, name: req.member.name } }));
 
-  app.get('/api/books', auth, (req, res) => {
+  api.patch('/me', (req, res) => {
+    const name = cleanName(req.body?.name);
+    if (!name) throw new HttpError(400, 'Please use a name of 2–40 characters.');
+    const m = store.renameMember(req.member.id, name);
+    res.json({ member: { id: m.id, name: m.name } });
+  });
+
+  api.delete('/me', (req, res) => {
+    library.deleteAccount(req.member);
+    res.json({ ok: true });
+  });
+
+  api.post('/logout', (req, res) => {
+    store.deleteSession(req.token);
+    res.json({ ok: true });
+  });
+
+  api.get('/books', (req, res) => {
     res.json({ results: store.search(String(req.query.q || ''), { limit: 200 }) });
   });
 
-  app.get('/api/my-books', auth, (req, res) => res.json({ books: store.booksOf(req.member.id) }));
+  api.get('/my-books', (req, res) => res.json({ books: store.booksOf(req.member.id) }));
 
   // Suggestions while adding: ?isbn=… for a scanned barcode, ?q=… for typed text.
-  app.get('/api/lookup', auth, async (req, res) => {
+  api.get('/lookup', async (req, res) => {
     const q = String(req.query.q || req.query.isbn || '').trim();
     if (!q) return res.json({ results: [] });
     if (looksLikeIsbn(q)) {
@@ -95,7 +113,7 @@ export function createApp({ store, deps = {}, settings = config } = {}) {
     res.json({ results: await searchBooks(q, 8) });
   });
 
-  app.post('/api/books', auth, (req, res) => {
+  api.post('/books', async (req, res) => {
     const books = (Array.isArray(req.body?.books) ? req.body.books : [])
       .slice(0, 200)
       .map((b) => ({
@@ -106,11 +124,11 @@ export function createApp({ store, deps = {}, settings = config } = {}) {
       }))
       .filter((b) => b.title);
     if (!books.length) throw new HttpError(400, 'Add at least one book with a title.');
-    const { added, skipped } = store.addBooks(req.member.id, books);
+    const { added, skipped } = await library.addBooks(req.member, books);
     res.json({ added, skipped: skipped.length });
   });
 
-  app.post('/api/scan-photo', auth, async (req, res) => {
+  api.post('/scan-photo', async (req, res) => {
     const img = parseDataUrl(req.body?.image);
     if (!img) throw new HttpError(400, 'No photo received.');
     let found;
@@ -123,19 +141,90 @@ export function createApp({ store, deps = {}, settings = config } = {}) {
     res.json({ results: await enrichAll(found) });
   });
 
-  app.patch('/api/books/:id', auth, (req, res) => {
+  api.patch('/books/:id', async (req, res) => {
     const status = req.body?.status;
     if (!['available', 'lent'].includes(status)) throw new HttpError(400, 'Unknown status.');
-    const book = store.setStatus(req.member.id, Number(req.params.id), status);
+    const book = await library.setAvailability(req.member, req.params.id, status);
     if (!book) throw new HttpError(404, 'Book not found.');
     res.json({ book });
   });
 
-  app.delete('/api/books/:id', auth, (req, res) => {
+  api.delete('/books/:id', (req, res) => {
     const book = store.removeBook(req.member.id, Number(req.params.id));
     if (!book) throw new HttpError(404, 'Book not found.');
     res.json({ book });
   });
+
+  // ---------- borrowing ----------
+
+  /** What the web app may know about a request: names only, plus the other person's number only if they shared it. */
+  const viewRequest = (r, me) => {
+    const iOwn = r.owner_id === me.id;
+    const otherShared = Boolean(iOwn ? r.borrower_shared : r.owner_shared);
+    return {
+      id: r.id,
+      role: iOwn ? 'owner' : 'borrower',
+      status: r.status,
+      note: r.note,
+      book: { id: r.book_id, title: r.book_title, author: r.book_author, cover: r.book_cover },
+      other: { name: iOwn ? r.borrower_name : r.owner_name },
+      otherPhone: otherShared ? store.memberById(iOwn ? r.borrower_id : r.owner_id)?.phone || null : null,
+      iShared: Boolean(iOwn ? r.owner_shared : r.borrower_shared),
+      createdAt: r.created_at,
+      dueAt: r.due_at,
+    };
+  };
+
+  api.get('/requests', (req, res) => {
+    // Seeing them here counts as seen, so WhatsApp won't repeat them later.
+    const pending = store.pendingInbox(req.member.id).map((i) => i.id);
+    store.markInboxDelivered(pending);
+    res.json({ requests: store.requestsFor(req.member.id).map((r) => viewRequest(r, req.member)) });
+  });
+
+  api.post('/requests', async (req, res) => {
+    const r = await library.want(req.member, req.body?.bookId, req.body?.note);
+    res.json({ request: viewRequest(r, req.member) });
+  });
+
+  const actions = {
+    accept: (m, id) => library.decide(m, id, true),
+    decline: (m, id) => library.decide(m, id, false),
+    cancel: (m, id) => library.cancel(m, id),
+    returned: (m, id) => library.markReturned(m, id),
+    share: async (m, id) => (await library.shareNumber(m, id), store.requestById(Number(id))),
+    block: (m, id) => (library.block(m, id), store.requestById(Number(id))),
+  };
+  api.post('/requests/:id/:action', async (req, res, next) => {
+    const fn = Object.hasOwn(actions, req.params.action) && actions[req.params.action];
+    if (!fn) return next(); // e.g. /messages, handled below
+    const r = await fn(req.member, req.params.id);
+    res.json({ request: viewRequest(r, req.member) });
+  });
+
+  api.get('/requests/:id/messages', (req, res) => {
+    const r = library.getRequest(req.params.id, req.member);
+    res.json({
+      request: viewRequest(r, req.member),
+      messages: store.messagesFor(r.id).map((m) => ({ id: m.id, mine: m.from_id === req.member.id, body: m.body, at: m.created_at })),
+    });
+  });
+
+  api.post('/requests/:id/messages', async (req, res) => {
+    const m = await library.sendMessage(req.member, req.params.id, req.body?.body);
+    res.json({ message: { id: m.id, mine: true, body: m.body, at: m.created_at } });
+  });
+
+  // ---------- wishlist ----------
+
+  api.get('/wishes', (req, res) => res.json({ wishes: store.wishesOf(req.member.id) }));
+  api.post('/wishes', (req, res) => res.json({ wish: library.addWish(req.member, req.body?.query) }));
+  api.delete('/wishes/:id', (req, res) => {
+    if (!store.removeWish(req.member.id, Number(req.params.id))) throw new HttpError(404, 'Not found.');
+    res.json({ ok: true });
+  });
+
+  api.use((_req, _res, next) => next(new HttpError(404, 'Not found.')));
 
   // ---------- static web app ----------
 
@@ -144,11 +233,12 @@ export function createApp({ store, deps = {}, settings = config } = {}) {
   );
   app.use(express.static(path.join(root, 'public')));
 
-  app.use('/api', (_req, _res, next) => next(new HttpError(404, 'Not found.')));
   app.use((err, _req, res, _next) => {
+    if (err instanceof LibraryError) err.status = 400;
     const status = err.status || (err.type === 'entity.too.large' ? 413 : 500);
     if (status >= 500) console.error(err);
-    res.status(status).json({ error: status >= 500 ? 'Something went wrong.' : err.message });
+    const message = status >= 500 ? 'Something went wrong.' : err.message.replace(/\*/g, '');
+    res.status(status).json({ error: message });
   });
 
   return app;
@@ -156,9 +246,16 @@ export function createApp({ store, deps = {}, settings = config } = {}) {
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   const store = openDb(config.dbPath);
-  createApp({ store }).listen(config.port, config.host, () => {
+  const app = createApp({ store });
+  app.listen(config.port, config.host, () => {
     console.log(`📚 ${config.communityName} running on http://localhost:${config.port}`);
     console.log(`   Photo scanning: ${visionEnabled() ? 'on' : 'off (set ANTHROPIC_API_KEY)'}`);
-    console.log(`   WhatsApp Cloud API: ${config.whatsapp.token ? 'on' : 'off'} · Twilio: ${config.twilio.authToken ? 'on' : 'off'}`);
+    console.log(
+      `   WhatsApp: ${whatsappEnabled() ? `on (templates ${config.templatesEnabled ? 'on' : 'off'}, budget ${config.monthlyTemplateLimit}/month)` : 'off'}`,
+    );
   });
+  // Return reminders: check hourly.
+  const remind = () => app.locals.library.runReminders().catch((err) => console.error('Reminders failed:', err));
+  setInterval(remind, 3600_000).unref();
+  setTimeout(remind, 60_000).unref();
 }

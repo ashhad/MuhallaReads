@@ -117,6 +117,14 @@ systemctl reload-or-restart caddy
 
 install -m 755 "$APP_DIR/deploy/oracle/backup.sh" /etc/cron.daily/muhallareads-backup
 
+# Admin helper: sudo muhallareads-login <whatsapp number> [display name]  → one-time website sign-in link
+cat > /usr/local/bin/muhallareads-login <<'HELPER'
+#!/bin/sh
+exec systemd-run --quiet --pipe --wait -p User=muhallareads -p EnvironmentFile=/etc/muhallareads/muhallareads.env \
+  -p WorkingDirectory=/opt/muhallareads /usr/bin/node --disable-warning=ExperimentalWarning scripts/login-link.js "$@"
+HELPER
+chmod 755 /usr/local/bin/muhallareads-login
+
 for _ in $(seq 1 20); do
   curl -fs "http://127.0.0.1:$PORT/api/config" >/dev/null && break
   sleep 1
@@ -134,6 +142,7 @@ cat <<DONE
               issued automatically within a minute after that)
   Settings:  sudo nano $ENV_FILE
              then: sudo systemctl restart muhallareads
+  Sign-in:   sudo muhallareads-login <your number> "Your name"   (website link, no WhatsApp needed)
   Logs:      journalctl -u muhallareads -f
   Backups:   /var/backups/muhallareads (daily, kept 14 days)
   Update:    git pull && sudo bash deploy/oracle/setup.sh
