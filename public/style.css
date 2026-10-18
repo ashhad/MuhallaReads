@@ -183,6 +183,9 @@ input[type=checkbox] { width: 1.2rem; height: 1.2rem; padding: 0; flex: none; ac
   display: flex; align-items: center; justify-content: space-between; gap: 1rem;
   background: var(--card); border: 1px solid var(--line); border-radius: var(--radius); padding: .9rem 1rem; margin: .4rem 0 1.2rem;
 }
+.usage { background: var(--card); border: 1px solid var(--line); border-radius: var(--radius); padding: .8rem 1rem; margin-bottom: 1.2rem; display: grid; gap: .35rem; }
+.meter { height: 8px; border-radius: 999px; background: var(--line); overflow: hidden; }
+.meter span { display: block; height: 100%; background: var(--brand); border-radius: inherit; }
 #me-name { font-family: var(--serif); font-weight: 400; font-size: 1.35rem; }
 .me-footer { display: flex; justify-content: space-between; margin: 2rem 0 1rem; }
 #wishes .info { font-size: .95rem; }

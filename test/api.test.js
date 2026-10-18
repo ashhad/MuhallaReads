@@ -17,7 +17,7 @@ before(async () => {
     deps: {
       transport,
       enrichAll: async (b) => b,
-      identifyBooks: async () => [{ title: 'Ikigai', author: '', isbn: null }],
+      identifyBooks: async () => ({ books: [{ title: 'Ikigai', author: '', isbn: null }], costUsd: 0.001 }),
       lookupIsbn: async () => ({ title: 'The Alchemist', author: 'Paulo Coelho', isbn: '9780062315007', cover: null }),
       searchBooks: async () => [],
     },

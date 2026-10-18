@@ -2,6 +2,7 @@ import path from 'node:path';
 
 const env = process.env;
 const digits = (s) => String(s || '').replace(/\D/g, '');
+const num = (v, fallback) => (v === undefined || v === '' ? fallback : Number(v));
 
 export const config = {
   port: Number(env.PORT || 3000),
@@ -28,9 +29,15 @@ export const config = {
   // Set WHATSAPP_TEMPLATES=off until Meta has approved the templates in docs/whatsapp-templates.md.
   templatesEnabled: (env.WHATSAPP_TEMPLATES || 'on').toLowerCase() !== 'off',
 
-  // Photo recognition (bookshelf / covers / barcodes) via Claude. Optional.
+  // Photo recognition (bookshelf / covers / barcodes) via Claude. Optional, and the only feature that
+  // costs money per use. Haiku is about ₹0.10 a photo; Sonnet and Opus read busy shelves better but
+  // cost roughly 20× and 40× more.
   anthropicApiKey: env.ANTHROPIC_API_KEY || '',
-  claudeModel: env.CLAUDE_MODEL || 'claude-opus-5-5',
+  claudeModel: env.CLAUDE_MODEL || 'claude-haiku-5-5',
+  // Hard limits (see src/photos.js): per member per 24 hours, and for everyone per month.
+  photoDailyLimit: num(env.PHOTO_DAILY_LIMIT, 10),
+  photoMonthlyLimit: num(env.PHOTO_MONTHLY_LIMIT, 300),
+  photoMonthlyBudgetUsd: num(env.PHOTO_MONTHLY_BUDGET_USD, 1),
 
   googleBooksApiKey: env.GOOGLE_BOOKS_API_KEY || '',
 

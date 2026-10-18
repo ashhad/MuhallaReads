@@ -94,9 +94,25 @@ CREATE TABLE IF NOT EXISTS inbox (
 );
 
 CREATE TABLE IF NOT EXISTS usage (
-  month     TEXT PRIMARY KEY,
-  templates INTEGER NOT NULL DEFAULT 0,
-  service   INTEGER NOT NULL DEFAULT 0
+  month      TEXT PRIMARY KEY,
+  templates  INTEGER NOT NULL DEFAULT 0,
+  service    INTEGER NOT NULL DEFAULT 0,
+  photos     INTEGER NOT NULL DEFAULT 0,
+  photo_cost REAL NOT NULL DEFAULT 0     -- US dollars spent on photo recognition
+);
+
+-- One row per photo read by Claude, for the per-member daily limit and weekly summaries.
+CREATE TABLE IF NOT EXISTS photo_scans (
+  id         INTEGER PRIMARY KEY,
+  member_id  INTEGER REFERENCES members(id) ON DELETE SET NULL,
+  cost       REAL NOT NULL,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS photo_scans_member ON photo_scans(member_id, created_at);
+
+CREATE TABLE IF NOT EXISTS meta (
+  key   TEXT PRIMARY KEY,
+  value TEXT
 );
 `;
 
@@ -117,6 +133,9 @@ function migrate(db) {
   }
   const inboxCols = new Set(db.prepare('PRAGMA table_info(inbox)').all().map((c) => c.name));
   if (!inboxCols.has('link')) db.exec('ALTER TABLE inbox ADD COLUMN link TEXT');
+  const usageCols = new Set(db.prepare('PRAGMA table_info(usage)').all().map((c) => c.name));
+  if (!usageCols.has('photos')) db.exec('ALTER TABLE usage ADD COLUMN photos INTEGER NOT NULL DEFAULT 0');
+  if (!usageCols.has('photo_cost')) db.exec('ALTER TABLE usage ADD COLUMN photo_cost REAL NOT NULL DEFAULT 0');
 }
 
 /** "Green Park Tower, Saket": the rough location shown next to a member's name. Never a full address. */
@@ -459,7 +478,33 @@ export class Store {
   }
 
   usageFor(month = now().slice(0, 7)) {
-    return this.q('SELECT * FROM usage WHERE month = ?').get(month) || { month, templates: 0, service: 0 };
+    return this.q('SELECT * FROM usage WHERE month = ?').get(month) || { month, templates: 0, service: 0, photos: 0, photo_cost: 0 };
+  }
+
+  // ---------- photo recognition (Claude API cost tracking) ----------
+
+  addPhotoScan(memberId, cost, at = now()) {
+    this.q('INSERT INTO photo_scans (member_id, cost, created_at) VALUES (?, ?, ?)').run(memberId, cost, at);
+    this.q(
+      `INSERT INTO usage (month, photos, photo_cost) VALUES (?, 1, ?)
+       ON CONFLICT(month) DO UPDATE SET photos = photos + 1, photo_cost = photo_cost + excluded.photo_cost`,
+    ).run(at.slice(0, 7), cost);
+  }
+
+  /** Photos (and their cost) since `since`, for one member or everyone. */
+  photoScansSince(since, memberId) {
+    return this.q(
+      `SELECT COUNT(*) AS photos, COALESCE(SUM(cost), 0) AS cost FROM photo_scans
+       WHERE created_at >= ? AND (? IS NULL OR member_id = ?)`,
+    ).get(since, memberId ?? null, memberId ?? null);
+  }
+
+  getMeta(key) {
+    return this.q('SELECT value FROM meta WHERE key = ?').get(key)?.value ?? null;
+  }
+
+  setMeta(key, value) {
+    this.q('INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value').run(key, value);
   }
 
   stats() {

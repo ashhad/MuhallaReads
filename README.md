@@ -50,7 +50,8 @@ and the app is built to stay within the free allowance most of the time:
 - A monthly cap (`MONTHLY_TEMPLATE_LIMIT`, default 200 ≈ ₹27) stops paid messages entirely.
 
 A 50-household pilot should cost roughly ₹5–15 a month. Admins can send `stats` to the bot to
-see this month's usage. Photo scanning (optional) is billed separately by Anthropic.
+see this month's usage. Photo scanning (optional) is billed separately by Anthropic and capped by
+`PHOTO_MONTHLY_BUDGET_USD` (default $1 a month).
 
 ## Run it
 
@@ -117,10 +118,19 @@ See `.env.example` for all of them. The main ones:
 | `MONTHLY_TEMPLATE_LIMIT` | Cap on paid WhatsApp messages per month (default 200) |
 | `WHATSAPP_TEMPLATES` | `off` until Meta approves the templates |
 | `ANTHROPIC_API_KEY` | Turns on shelf-photo recognition |
+| `CLAUDE_MODEL` | Model that reads photos (default `claude-haiku-5-5`) |
+| `PHOTO_DAILY_LIMIT` | Photos each member can scan in 24 hours (default 10) |
+| `PHOTO_MONTHLY_LIMIT` | Photos everyone together can scan per month (default 300) |
+| `PHOTO_MONTHLY_BUDGET_USD` | Monthly spend cap for photo scanning, in US dollars (default 1) |
 
-Photos are read by Claude (`claude-opus-5-5` by default; change it with `CLAUDE_MODEL`). Each
-photo is one API call. Requests opt in to Anthropic's server-side fallback (`fallbacks: "default"`),
-so if the main model declines a photo, another model retries it.
+Photos are read by Claude, one API call each. Haiku (the default) costs about $0.001 (₹0.10) per
+shelf photo; Sonnet and Opus read crowded shelves better but cost roughly 20× and 40× more. The app
+works out each photo's real cost from the token counts Claude returns and pauses scanning for
+everyone once the month reaches `PHOTO_MONTHLY_BUDGET_USD` or `PHOTO_MONTHLY_LIMIT`. Admins get a
+WhatsApp message at 50%, 80% and 100%, a summary on Monday mornings in weeks with scans, and see
+the running total on their Me tab and in `stats`. Sonnet and Opus requests also opt in to
+Anthropic's server-side fallback (`fallbacks: "default"`), so a declined photo is retried by
+another model.
 
 ## Code map
 
@@ -133,7 +143,8 @@ src/notifier.js   WhatsApp notifications: free reply / one template / wait
 src/whatsapp.js   Meta Cloud API: sending, webhook
 src/db.js         SQLite storage (node:sqlite)
 src/lookup.js     book details from Open Library, with Google Books as fallback
-src/vision.js     finding books in photos with Claude
+src/vision.js     finding books in photos with Claude (and what each call cost)
+src/photos.js     hard limits and cost alerts for photo scanning
 scripts/          admin helpers
 deploy/oracle/    free-hosting setup script
 ```

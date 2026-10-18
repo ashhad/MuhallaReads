@@ -170,11 +170,13 @@ sudo systemctl start muhallareads
   Telling someone about a request while they're away costs about ₹0.14, capped by
   `MONTHLY_TEMPLATE_LIMIT` (default 200 ≈ ₹27 a month). A pilot typically costs ₹5–15 a month.
   Send `stats` to the bot to see this month's usage.
-- **Photo scanning** costs money too. Each photo is one Claude API call. With
-  the default model that's roughly a few rupees per photo (a rough estimate; check Anthropic's
-  pricing page). To make it much cheaper, set `CLAUDE_MODEL=claude-haiku-5-5` (it may miss more
-  titles on busy shelves). To turn it off, leave `ANTHROPIC_API_KEY` empty. Typing and barcode
-  scanning are always free.
+- **Photo scanning** costs money too. Each photo is one Claude API call: about ₹0.10 with the
+  default Haiku model, ₹2 with `CLAUDE_MODEL=claude-sonnet-5-5`, ₹4 with `claude-opus-5-5`. Hard
+  limits keep it small: `PHOTO_DAILY_LIMIT` (10 per member a day), `PHOTO_MONTHLY_LIMIT` (300 a
+  month) and `PHOTO_MONTHLY_BUDGET_USD` (default $1 a month), after which scanning pauses until the
+  1st. Admins are messaged on WhatsApp at 50%, 80% and 100%. As a backstop, also set a monthly
+  spend limit in the Anthropic Console (Settings → Limits). To turn it off, leave
+  `ANTHROPIC_API_KEY` empty. Typing and barcode scanning are always free.
 
 ## Troubleshooting
 

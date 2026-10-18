@@ -194,6 +194,18 @@ async function openPendingLink() {
 function renderMe() {
   $('#me-name').textContent = state.me.name;
   $('#me-place').textContent = state.me.place || 'Add your building or locality';
+  // Admins only: this month's running costs.
+  const u = state.me.usage;
+  $('#admin-usage').hidden = !u;
+  if (u) {
+    const p = u.photos;
+    const pct = Math.min(100, Math.round(Math.max(p.costUsd / p.budgetUsd, p.photos / p.photoLimit) * 100) || 0);
+    $('#admin-usage').innerHTML = `
+      <div class="muted small">Admin · this month's costs</div>
+      <div><strong>Photo scans:</strong> $${p.costUsd.toFixed(2)} of $${p.budgetUsd.toFixed(2)} · ${p.photos} of ${p.photoLimit} photos${pct >= 100 ? ' · <strong>paused</strong>' : ''}</div>
+      <div class="meter"><span style="width: ${pct}%"></span></div>
+      <div class="muted small">Up to ${p.dailyLimit} photos per member a day. WhatsApp: ${u.templates} of ${u.templateLimit} paid templates.</div>`;
+  }
 }
 
 /** Name, building and locality. With `required`, it can't be dismissed until a building or locality is set. */
@@ -712,12 +724,14 @@ $('#add-all').addEventListener('click', async () => {
 // ---------- me: my books & wishes ----------
 
 async function loadMe() {
-  let books, wishes;
+  let books, wishes, member;
   try {
-    [{ books }, { wishes }] = await Promise.all([api('/api/my-books'), api('/api/wishes')]);
+    [{ books }, { wishes }, { member }] = await Promise.all([api('/api/my-books'), api('/api/wishes'), api('/api/me')]);
   } catch (ex) {
     return toast(ex.message);
   }
+  state.me = member;
+  renderMe();
   $('#mine-count').textContent = books.length ? `(${books.length})` : '';
   $('#mine').innerHTML = books.length
     ? books

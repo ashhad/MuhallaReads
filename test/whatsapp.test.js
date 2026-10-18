@@ -24,7 +24,7 @@ test('Cloud API webhook end to end: signature, setup, sign-in button and a paid 
       ...baseSettings,
       whatsapp: { token: 'tok', phoneNumberId: '555', verifyToken: 'vt', appSecret: 'secret', graphVersion: 'v23.0', templateLang: 'en' },
     },
-    deps: { enrichAll: async (b) => b, identifyBooks: async () => [], lookupIsbn: async () => null, searchBooks: async () => [] },
+    deps: { enrichAll: async (b) => b, identifyBooks: async () => ({ books: [], costUsd: 0 }), lookupIsbn: async () => null, searchBooks: async () => [] },
   });
   const server = await new Promise((r) => { const s = app.listen(0, () => r(s)); });
   const base = `http://127.0.0.1:${server.address().port}`;

@@ -9,6 +9,7 @@ import { identifyBooks, parseDataUrl, VisionError } from './vision.js';
 import { createBot, cleanName, cleanPlace } from './bot.js';
 import { createLibrary, LibraryError } from './library.js';
 import { createNotifier } from './notifier.js';
+import { createPhotoLimits, PhotoLimitError } from './photos.js';
 import { createMetaTransport, whatsappRouter } from './whatsapp.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -32,10 +33,12 @@ export function createApp({ store, deps = {}, settings = config } = {}) {
 
   const notifier = createNotifier({ store, transport, settings });
   const library = createLibrary({ store, notifier, settings });
+  const photos = createPhotoLimits({ store, notifier, settings });
   const bot = createBot({ store, library, notifier, settings });
 
   const app = express();
   app.locals.library = library;
+  app.locals.photos = photos;
   app.disable('x-powered-by');
   app.use(
     express.json({
@@ -77,7 +80,18 @@ export function createApp({ store, deps = {}, settings = config } = {}) {
   api.use(auth);
   app.use('/api', api);
 
-  const publicMe = (m) => ({ id: m.id, name: m.name, building: m.building, locality: m.locality, place: placeOf(m) });
+  const isAdmin = (m) => Boolean(settings.adminPhones?.includes(m.phone));
+  const publicMe = (m) => ({
+    id: m.id,
+    name: m.name,
+    building: m.building,
+    locality: m.locality,
+    place: placeOf(m),
+    // Admins see this month's running costs on their Me tab.
+    ...(isAdmin(m) && {
+      usage: { photos: photos.usage(), templates: store.usageFor().templates, templateLimit: settings.monthlyTemplateLimit },
+    }),
+  });
 
   api.get('/me', (req, res) => res.json({ member: publicMe(req.member) }));
 
@@ -155,12 +169,13 @@ export function createApp({ store, deps = {}, settings = config } = {}) {
     if (!img) throw new HttpError(400, 'No photo received.');
     let found;
     try {
-      found = await identify(img.buffer, img.mediaType);
+      found = await photos.scan(req.member, () => identify(img.buffer, img.mediaType));
     } catch (err) {
+      if (err instanceof PhotoLimitError) throw new HttpError(429, err.message);
       if (err instanceof VisionError) throw new HttpError(422, err.message);
       throw err;
     }
-    res.json({ results: await enrichAll(found) });
+    res.json({ results: await enrichAll(found.books) });
   });
 
   api.patch('/books/:id', async (req, res) => {
@@ -200,8 +215,9 @@ export function createApp({ store, deps = {}, settings = config } = {}) {
   };
 
   api.get('/requests', (req, res) => {
-    // Seeing them here counts as seen, so WhatsApp won't repeat them later.
-    const pending = store.pendingInbox(req.member.id).map((i) => i.id);
+    // Request notifications seen here count as seen, so WhatsApp won't repeat them later. Others (e.g.
+    // admin alerts) aren't shown in the app, so they still wait for WhatsApp.
+    const pending = store.pendingInbox(req.member.id).filter((i) => i.request_id).map((i) => i.id);
     store.markInboxDelivered(pending);
     res.json({ requests: store.requestsFor(req.member.id).map((r) => viewRequest(r, req.member)) });
   });
@@ -283,13 +299,18 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
   const app = createApp({ store });
   app.listen(config.port, config.host, () => {
     console.log(`📚 ${config.communityName} running on http://localhost:${config.port}`);
-    console.log(`   Photo scanning: ${visionEnabled() ? 'on' : 'off (set ANTHROPIC_API_KEY)'}`);
+    console.log(
+      `   Photo scanning: ${visionEnabled() ? `on (${config.claudeModel}, up to $${config.photoMonthlyBudgetUsd}/month)` : 'off (set ANTHROPIC_API_KEY)'}`,
+    );
     console.log(
       `   WhatsApp: ${whatsappEnabled() ? `on (templates ${config.templatesEnabled ? 'on' : 'off'}, budget ${config.monthlyTemplateLimit}/month)` : 'off'}`,
     );
   });
-  // Return reminders: check hourly.
-  const remind = () => app.locals.library.runReminders().catch((err) => console.error('Reminders failed:', err));
+  // Return reminders and the admins' weekly photo-cost summary: check hourly.
+  const remind = () => {
+    app.locals.library.runReminders().catch((err) => console.error('Reminders failed:', err));
+    app.locals.photos.weeklySummary().catch((err) => console.error('Weekly summary failed:', err));
+  };
   setInterval(remind, 3600_000).unref();
   setTimeout(remind, 60_000).unref();
 }

@@ -18,6 +18,9 @@ export const baseSettings = {
   maxPendingRequests: 5,
   monthlyTemplateLimit: 200,
   templatesEnabled: true,
+  photoDailyLimit: 10,
+  photoMonthlyLimit: 300,
+  photoMonthlyBudgetUsd: 1,
 };
 
 export function fakeTransport() {
@@ -81,5 +84,5 @@ export function makeWorld({ settings = {} } = {}) {
 
   const member = (phone) => store.memberByPhone(phone);
 
-  return { store, transport, notifier, library, bot, say, join, member, closeWindow, time, settings: s };
+  return { store, transport, notifier, library, bot, say, join, member, closeWindow, time, clock, settings: s };
 }
