@@ -1,4 +1,4 @@
-# 📚 MuhallaReads
+# 📚 Muhalla Reads
 
 A private neighbourhood library that lives in WhatsApp. Neighbours list the books they own, find
 the ones they need, and borrow them from each other. **Nobody's phone number is ever shown to
