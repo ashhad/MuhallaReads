@@ -99,9 +99,22 @@ async function boot() {
   }
   if (c.stats) $('.stats').textContent = `${c.stats.books} books shared by ${c.stats.members} neighbours`;
   $('#photo-mode').hidden = !c.photoScan;
+  // Invite links (on posters and in group chats) look like /?join=CODE, so nobody has to type the code.
+  const search = new URLSearchParams(location.search);
+  if (search.has('join')) {
+    store.set('joinCode', search.get('join').trim().slice(0, 40) || null);
+    search.delete('join');
+    history.replaceState(null, '', search.size ? `${location.pathname}?${search}` : location.pathname);
+  }
+  const invite = store.get('joinCode');
   if (c.whatsappNumber) {
-    $('#wa-signin').href = waLink(c.whatsappNumber, 'login');
+    $('#wa-signin').href = waLink(c.whatsappNumber, invite ? `join ${invite}` : 'login');
     $('#wa-signin').hidden = false;
+    if (invite) {
+      $('#wa-signin').textContent = 'Join with WhatsApp';
+      $('#signin-help').textContent =
+        'Tap the button, then press Send in WhatsApp. The library asks two quick questions and sends you back here, signed in.';
+    }
     $('#bot-link').href = waLink(c.whatsappNumber, 'hi');
     $('#bot-link').hidden = false;
   }
@@ -144,6 +157,7 @@ function signedOut() {
 }
 
 function showApp() {
+  store.set('joinCode', null);
   $('#signin').hidden = true;
   $('#app').hidden = false;
   renderMe();
