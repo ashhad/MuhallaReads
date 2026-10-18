@@ -141,30 +141,56 @@ function signedOut() {
 function showApp() {
   $('#signin').hidden = true;
   $('#app').hidden = false;
-  $('#me-name').textContent = state.me.name;
+  renderMe();
   showView('find');
   refreshRequests();
+  if (!state.me.place) editProfile({ required: true });
 }
+
+function renderMe() {
+  $('#me-name').textContent = state.me.name;
+  $('#me-place').textContent = state.me.place || 'Add your building or locality';
+}
+
+/** Name, building and locality. With `required`, it can't be dismissed until a building or locality is set. */
+function editProfile({ required = false } = {}) {
+  const d = $('#profile');
+  const f = $('#profile-form');
+  f.displayName.value = state.me.name;
+  f.building.value = state.me.building || '';
+  f.locality.value = state.me.locality || '';
+  f.querySelector('.error').textContent = '';
+  $('#profile-title').textContent = required ? 'One last step' : 'About you';
+  $('#profile-cancel').hidden = required;
+  d.oncancel = (e) => required && e.preventDefault(); // Esc can't skip a required setup
+  d.showModal();
+}
+
+$('#edit-profile').addEventListener('click', () => editProfile());
+$('#profile-form').addEventListener('input', () => ($('#profile-form .error').textContent = ''));
+$('#profile-cancel').addEventListener('click', () => $('#profile').close());
+$('#profile-form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const f = e.target;
+  const err = f.querySelector('.error');
+  if (!f.building.value.trim() && !f.locality.value.trim()) {
+    err.textContent = 'Please give your building or your locality (or both).';
+    return;
+  }
+  try {
+    const body = { name: f.displayName.value, building: f.building.value, locality: f.locality.value };
+    state.me = (await api('/api/me', { method: 'PATCH', body })).member;
+    renderMe();
+    $('#profile').close();
+    runSearch();
+  } catch (ex) {
+    err.textContent = ex.message;
+  }
+});
 
 $('#logout').addEventListener('click', async () => {
   await api('/api/logout', { method: 'POST' }).catch(() => {});
   signedOut();
-});
-
-$('#rename').addEventListener('click', async () => {
-  const name = await sheet({
-    title: 'Your display name',
-    text: 'This is all neighbours see. Adding your block or building helps, e.g. “Ashhad (Block C)”.',
-    input: { value: state.me.name, maxLength: 40 },
-    ok: 'Save',
-  });
-  if (!name) return;
-  try {
-    state.me = (await api('/api/me', { method: 'PATCH', body: { name } })).member;
-    $('#me-name').textContent = state.me.name;
-  } catch (ex) {
-    toast(ex.message);
-  }
 });
 
 $('#delete-account').addEventListener('click', async () => {
@@ -240,7 +266,8 @@ async function runSearch() {
           else if (!mine && c.status !== 'lent') {
             action = `<button class="btn small want" data-book="${c.bookId}" data-title="${esc(g.title)}" data-owner="${esc(c.owner.name)}">Request</button>`;
           }
-          return `<div class="owner"><span>${mine ? 'You' : esc(c.owner.name)}</span>${status}${action}</div>`;
+          const who = mine ? 'You' : `${esc(c.owner.name)}${c.owner.place ? ` <span class="place">· ${esc(c.owner.place)}</span>` : ''}`;
+          return `<div class="owner"><span>${who}</span>${status}${action}</div>`;
         })
         .join('');
       return `<li class="book">${cover(g)}<div class="info">
@@ -287,7 +314,8 @@ async function refreshRequests() {
 const STATUS_TEXT = { pending: 'waiting', accepted: 'on loan', declined: 'declined', cancelled: 'cancelled', returned: 'returned' };
 
 function requestCard(r) {
-  const who = r.role === 'owner' ? `${esc(r.other.name)} → you` : `from ${esc(r.other.name)}`;
+  const other = `${esc(r.other.name)}${r.other.place ? ` <span class="place">(${esc(r.other.place)})</span>` : ''}`;
+  const who = r.role === 'owner' ? `${other} → you` : `from ${other}`;
   const buttons = [];
   if (r.role === 'owner' && r.status === 'pending') {
     buttons.push(`<button class="btn small primary" data-act="accept" data-id="${r.id}">Accept</button>`);
@@ -355,7 +383,7 @@ async function openThread(id) {
   const r = data.request;
   $('#thread-head').innerHTML = `<div class="book small">${cover(r.book)}<div class="info">
       <div class="title">${esc(r.book.title)}</div>
-      <div class="author">${r.role === 'owner' ? 'Lending to' : 'Borrowing from'} ${esc(r.other.name)}${r.dueAt ? ` · due ${fmtDate(r.dueAt)}` : ''}</div></div></div>
+      <div class="author">${r.role === 'owner' ? 'Lending to' : 'Borrowing from'} ${esc(r.other.name)}${r.other.place ? ` (${esc(r.other.place)})` : ''}${r.dueAt ? ` · due ${fmtDate(r.dueAt)}` : ''}</div></div></div>
     ${r.otherPhone ? `<div class="shared">📞 ${esc(r.other.name)} shared their number: <a target="_blank" rel="noopener" href="${esc(waLink(r.otherPhone))}">+${esc(r.otherPhone)}</a></div>` : ''}`;
 
   $('#thread-messages').innerHTML = data.messages.length

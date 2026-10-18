@@ -1,10 +1,13 @@
 // Borrowing, lending and private messaging between members. Shared by the WhatsApp bot and the web API.
 // Nobody's phone number is ever revealed unless they explicitly choose to share it with one person.
-import { matchesQuery } from './db.js';
+import { matchesQuery, placeOf } from './db.js';
 
 export class LibraryError extends Error {}
 
 const CHAT_MAX = 1000;
+
+/** "Bilal (Sunrise Apartments, Saket)": name plus rough location, for messages to the other person. */
+export const who = (m) => (placeOf(m) ? `${m.name} (${placeOf(m)})` : m.name);
 
 export function createLibrary({ store, notifier, settings, clock = () => new Date() }) {
   const fmtDate = (iso) =>
@@ -43,7 +46,7 @@ export function createLibrary({ store, notifier, settings, clock = () => new Dat
     await notifier.notify(book.owner_id, {
       requestId: id,
       text:
-        `📚 *${borrower.name}* would like to borrow *${book.title}*.` +
+        `📚 *${who(borrower)}* would like to borrow *${book.title}*.` +
         (note ? `\n💬 "${note}"` : '') +
         `\n\nReply *accept ${id}* or *decline ${id}*.`,
       buttons: [
@@ -52,7 +55,7 @@ export function createLibrary({ store, notifier, settings, clock = () => new Dat
       ],
       template: {
         name: 'book_request',
-        params: [borrower.name, book.title, note || '-'],
+        params: [who(borrower), book.title, note || '-'],
         buttons: [`accept:${id}`, `decline:${id}`],
       },
     });
@@ -201,10 +204,10 @@ export function createLibrary({ store, notifier, settings, clock = () => new Dat
       store.removeWish(wish.member_id, wish.id);
       await notifier.notify(wish.member_id, {
         text:
-          `📚 Good news: *${book.title}* (you asked about "${wish.query}") was just added by *${member.name}*.\n` +
+          `📚 Good news: *${book.title}* (you asked about "${wish.query}") was just added by *${who(member)}*.\n` +
           `Reply *want ${book.id}* to ask to borrow it.`,
         buttons: [{ id: `want:${book.id}`, title: 'Request it' }],
-        template: { name: 'wishlist_match', params: [book.title, member.name], buttons: [`want:${book.id}`] },
+        template: { name: 'wishlist_match', params: [book.title, who(member)], buttons: [`want:${book.id}`] },
       });
     }
     return result;

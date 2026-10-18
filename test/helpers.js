@@ -77,5 +77,12 @@ export function makeWorld({ settings = {}, photoBooks = [] } = {}) {
     store.touchInbound(m.id, new Date(time.now - 2 * 86400_000).toISOString());
   }
 
-  return { store, transport, notifier, library, bot, say, closeWindow, time, settings: s };
+  /** Joins as a new member and answers the two setup questions. */
+  async function join(phone, name, building = 'Green Park Tower', locality = 'Saket') {
+    await say(phone, 'hi', { profileName: name });
+    await say(phone, building);
+    return say(phone, locality);
+  }
+
+  return { store, transport, notifier, library, bot, say, join, closeWindow, time, settings: s };
 }

@@ -67,26 +67,37 @@ test('Cloud API webhook end to end: signature, replies and a paid template with 
     });
     assert.equal(bad.status, 401);
 
-    await post(AYESHA, 'Ayesha', 'add Dune by Frank Herbert');
-    await settle(2);
-    assert.equal(sent[0].url, 'https://graph.facebook.com/v23.0/555/messages');
-    assert.equal(sent[0].auth, 'Bearer tok');
-    assert.match(sent[0].body.text.body, /Welcome, Ayesha/);
-    assert.match(sent[1].body.text.body, /Added 1 book/);
+    // Each message is answered before the next is sent, as on a phone.
+    const chat = async (from, name, text, replies) => {
+      const before = sent.length;
+      await post(from, name, text);
+      await settle(before + replies);
+      return sent.slice(before);
+    };
+    const welcome = await chat(AYESHA, 'Ayesha', 'hi', 2);
+    assert.equal(welcome[0].url, 'https://graph.facebook.com/v23.0/555/messages');
+    assert.equal(welcome[0].auth, 'Bearer tok');
+    assert.match(welcome[0].body.text.body, /Welcome, Ayesha/);
+    assert.equal(welcome[1].body.type, 'interactive'); // building question with a Skip button
+    assert.equal(welcome[1].body.interactive.action.buttons[0].reply.id, 'skip');
+    await chat(AYESHA, 'Ayesha', 'Green Park Tower', 1);
+    assert.match((await chat(AYESHA, 'Ayesha', 'Saket', 1))[0].body.text.body, /All set/);
+    assert.match((await chat(AYESHA, 'Ayesha', 'add Dune by Frank Herbert', 1))[0].body.text.body, /Added 1 book/);
 
     // Ayesha's window is closed by the time Bilal asks, so Meta gets a template.
     const ayesha = store.memberByPhone(AYESHA);
     store.touchInbound(ayesha.id, new Date(Date.now() - 2 * 86400_000).toISOString());
     const bookId = store.booksOf(ayesha.id)[0].id;
-    sent.length = 0;
-    await post(BILAL, 'Bilal', `want ${bookId}`);
-    await settle(3); // welcome to Bilal, template to Ayesha, confirmation to Bilal
-    const tpl = sent.find((s) => s.body.type === 'template');
+    await chat(BILAL, 'Bilal', 'hi', 2);
+    await chat(BILAL, 'Bilal', 'skip', 1);
+    await chat(BILAL, 'Bilal', 'Saket', 1);
+    const out = await chat(BILAL, 'Bilal', `want ${bookId}`, 2); // template to Ayesha, confirmation to Bilal
+    const tpl = out.find((s) => s.body.type === 'template');
     assert.equal(tpl.body.to, AYESHA);
     assert.equal(tpl.body.template.name, 'book_request');
     assert.equal(tpl.body.template.language.code, 'en');
     const [bodyComp, accept, decline] = tpl.body.template.components;
-    assert.deepEqual(bodyComp.parameters.map((p) => p.text), ['Bilal', 'Dune', '-']);
+    assert.deepEqual(bodyComp.parameters.map((p) => p.text), ['Bilal (Saket)', 'Dune', '-']);
     assert.match(accept.parameters[0].payload, /^accept:\d+$/);
     assert.equal(decline.index, '1');
     assert.equal(store.usageFor().templates, 1);

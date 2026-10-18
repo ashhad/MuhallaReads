@@ -7,8 +7,8 @@ const idFrom = (text, re) => Number(re.exec(text)[1]);
 
 async function twoMembers(opts) {
   const w = makeWorld(opts);
-  await w.say(AYESHA, 'hi', { profileName: 'Ayesha' });
-  await w.say(BILAL, 'hi', { profileName: 'Bilal' });
+  await w.join(AYESHA, 'Ayesha', 'Green Park Tower', 'Saket');
+  await w.join(BILAL, 'Bilal', 'Sunrise Apartments', 'Saket');
   return w;
 }
 
@@ -22,9 +22,9 @@ test('parses "title by author" lines and cleans display names', () => {
 
 test('join code is required when configured', async () => {
   const w = makeWorld({ settings: { joinCode: 'books42' } });
-  assert.match(await w.say(AYESHA, 'hello'), /join <community code>/);
+  assert.match(await w.say(AYESHA, 'hello'), /join <code>/);
   assert.equal(w.store.memberByPhone(AYESHA), undefined);
-  assert.match(await w.say(AYESHA, 'join BOOKS42', { profileName: 'Ayesha' }), /Welcome, Ayesha/);
+  assert.match(await w.say(AYESHA, 'join BOOKS42', { profileName: 'Ayesha' }), /Welcome, Ayesha[\s\S]*building or society/);
   assert.ok(w.store.memberByPhone(AYESHA));
 });
 
@@ -33,7 +33,7 @@ test('search shows display names only, never phone numbers', async () => {
   await w.say(AYESHA, 'add Dune by Frank Herbert');
   const r = await w.say(BILAL, 'who has dune?');
   assert.match(r, /\*Dune\* — Frank Herbert/);
-  assert.match(r, /Ayesha ✅ → \*want \d+\*/);
+  assert.match(r, /Ayesha · Green Park Tower, Saket ✅ → \*want \d+\*/);
   assert.match(r, /Ask Ayesha=want:\d+/);
   assert.doesNotMatch(r, /9198000/);
   assert.doesNotMatch(r, /wa\.me/);
@@ -52,7 +52,7 @@ test('full private loan: request → accept → chat → share number → return
   const [tpl] = w.transport.to(AYESHA);
   assert.equal(tpl.kind, 'template');
   assert.equal(tpl.name, 'book_request');
-  assert.deepEqual(tpl.params, ['Bilal', 'Dune', 'could I pick it up Sunday?']);
+  assert.deepEqual(tpl.params, ['Bilal (Sunrise Apartments, Saket)', 'Dune', 'could I pick it up Sunday?']);
   assert.deepEqual(tpl.buttons, [`accept:${reqId}`, `decline:${reqId}`]);
   assert.match(await w.say(BILAL, `want ${bookId}`), /already asked/);
 
@@ -90,7 +90,7 @@ test('full private loan: request → accept → chat → share number → return
 
 test('one paid nudge per absence; the rest wait until the member is back', async () => {
   const w = await twoMembers();
-  await w.say(CHAND, 'hi', { profileName: 'Chand' });
+  await w.join(CHAND, 'Chand');
   await w.say(AYESHA, 'add\nDune by Frank Herbert\nSapiens by Yuval Noah Harari');
   const [dune, sapiens] = w.store.booksOf(w.store.memberByPhone(AYESHA).id).sort((a, b) => a.id - b.id);
   w.closeWindow(AYESHA);
@@ -129,7 +129,7 @@ test('wishlist: notify me when someone adds a book', async () => {
   await w.say(AYESHA, 'add Gitanjali by Rabindranath Tagore');
   const [n] = w.transport.to(BILAL);
   assert.equal(n.name, 'wishlist_match');
-  assert.deepEqual(n.params, ['Gitanjali', 'Ayesha']);
+  assert.deepEqual(n.params, ['Gitanjali', 'Ayesha (Green Park Tower, Saket)']);
   assert.equal(w.store.wishesOf(w.store.memberByPhone(BILAL).id).length, 0);
 });
 
@@ -176,7 +176,7 @@ test('login link, rename, admin stats and delete account', async () => {
   assert.equal(w.store.consumeLoginCode(code), w.store.memberByPhone(BILAL).id);
   assert.equal(w.store.consumeLoginCode(code), null); // single use
 
-  assert.match(await w.say(BILAL, 'name Bilal (Block D)'), /Bilal \(Block D\)/);
+  assert.match(await w.say(BILAL, 'name Bilal K'), /Bilal K/);
   assert.match(await w.say(AYESHA, 'stats'), /2 members/);
   assert.match(await w.say(BILAL, 'stats'), /Nobody has "stats"/); // not an admin
 
@@ -190,7 +190,7 @@ test('login link, rename, admin stats and delete account', async () => {
 
 test('photo adds every recognised book', async () => {
   const w = makeWorld({ photoBooks: [{ title: 'Atomic Habits', author: 'James Clear', isbn: null }, { title: 'Ikigai', author: '', isbn: null }] });
-  await w.say(AYESHA, 'hi', { profileName: 'Ayesha' });
+  await w.join(AYESHA, 'Ayesha');
   const r = await w.say(AYESHA, '', { image: async () => ({ buffer: Buffer.from('x'), mediaType: 'image/jpeg' }) });
   assert.match(r, /Looking for books/);
   assert.match(r, /Added 2 books/);
@@ -204,4 +204,39 @@ test('marking a lent book available closes its loan', async () => {
   await w.say(AYESHA, `accept ${reqId}`);
   assert.match(await w.say(AYESHA, `back ${bookId}`), /available again/);
   assert.equal(w.store.requestById(reqId).status, 'returned');
+});
+
+test('setup asks for building then locality; at least one is required', async () => {
+  const w = makeWorld();
+  const first = await w.say(AYESHA, 'add Dune', { profileName: 'Ayesha' });
+  assert.match(first, /Welcome, Ayesha[\s\S]*building or society[\s\S]*Skip=skip/);
+  assert.equal(w.store.booksOf(w.store.memberByPhone(AYESHA).id).length, 0); // setup comes first
+
+  // Skipping both isn't allowed.
+  assert.match(await w.say(AYESHA, '', { payload: 'skip' }), /locality or area/);
+  assert.match(await w.say(AYESHA, 'skip'), /at least your locality/);
+  // A tapped button mid-setup doesn't become a locality.
+  assert.match(await w.say(AYESHA, '', { payload: 'accept:3' }), /finish setting you up/);
+  assert.match(await w.say(AYESHA, 'Saket'), /All set! Neighbours will see you as \*Ayesha \(Saket\)\*/);
+  assert.equal(w.store.memberByPhone(AYESHA).locality, 'Saket');
+  assert.match(await w.say(AYESHA, 'add Dune'), /Added 1 book/);
+
+  // Building only is fine too.
+  await w.say(BILAL, 'hi', { profileName: 'Bilal' });
+  await w.say(BILAL, 'Sunrise Apartments');
+  assert.match(await w.say(BILAL, 'skip'), /Bilal \(Sunrise Apartments\)/);
+});
+
+test('building and locality can be changed, but not both removed', async () => {
+  const w = await twoMembers();
+  assert.match(await w.say(AYESHA, 'building Lotus Heights'), /Ayesha \(Lotus Heights, Saket\)/);
+  assert.match(await w.say(AYESHA, 'locality none'), /Ayesha \(Lotus Heights\)/);
+  assert.match(await w.say(AYESHA, 'building none'), /Keep at least one/);
+  assert.match(await w.say(AYESHA, 'area Malviya Nagar'), /Lotus Heights, Malviya Nagar/);
+});
+
+test('members without a location are asked for it before anything else', async () => {
+  const w = makeWorld();
+  w.store.createMember({ name: 'Old Member', phone: AYESHA }); // e.g. created before this existed
+  assert.match(await w.say(AYESHA, 'dune'), /building or society/);
 });

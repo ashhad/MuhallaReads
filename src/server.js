@@ -2,11 +2,11 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import express from 'express';
 import { config, visionEnabled, whatsappEnabled } from './config.js';
-import { openDb } from './db.js';
+import { openDb, placeOf } from './db.js';
 import { normalizeIsbn, looksLikeIsbn } from './isbn.js';
 import * as lookup from './lookup.js';
 import { identifyBooks, parseDataUrl, VisionError } from './vision.js';
-import { createBot, cleanName } from './bot.js';
+import { createBot, cleanName, cleanPlace } from './bot.js';
 import { createLibrary, LibraryError } from './library.js';
 import { createNotifier } from './notifier.js';
 import { createMetaTransport, whatsappRouter } from './whatsapp.js';
@@ -77,14 +77,36 @@ export function createApp({ store, deps = {}, settings = config } = {}) {
   api.use(auth);
   app.use('/api', api);
 
-  api.get('/me', (req, res) => res.json({ member: { id: req.member.id, name: req.member.name } }));
+  const publicMe = (m) => ({ id: m.id, name: m.name, building: m.building, locality: m.locality, place: placeOf(m) });
 
+  api.get('/me', (req, res) => res.json({ member: publicMe(req.member) }));
+
+  // Any of: name, building, locality. Building or locality must remain set.
   api.patch('/me', (req, res) => {
-    const name = cleanName(req.body?.name);
-    if (!name) throw new HttpError(400, 'Please use a name of 2–40 characters.');
-    const m = store.renameMember(req.member.id, name);
-    res.json({ member: { id: m.id, name: m.name } });
+    const b = req.body || {};
+    if ('name' in b) {
+      const name = cleanName(b.name);
+      if (!name) throw new HttpError(400, 'Please use a name of 2–40 characters.');
+      store.renameMember(req.member.id, name);
+    }
+    if ('building' in b || 'locality' in b) {
+      const place = {
+        building: 'building' in b ? cleanPlace(b.building) : req.member.building,
+        locality: 'locality' in b ? cleanPlace(b.locality) : req.member.locality,
+      };
+      if (!place.building && !place.locality) {
+        throw new HttpError(400, 'Please give your building or your locality (2–60 characters).');
+      }
+      store.setPlace(req.member.id, place);
+    }
+    res.json({ member: publicMe(store.memberById(req.member.id)) });
   });
+
+  // Adding and requesting books need a building or locality, so neighbours know roughly where you are.
+  const requirePlace = (req, _res, next) => {
+    if (!placeOf(req.member)) throw new HttpError(400, 'Please add your building or locality first (Me tab).');
+    next();
+  };
 
   api.delete('/me', (req, res) => {
     library.deleteAccount(req.member);
@@ -113,7 +135,7 @@ export function createApp({ store, deps = {}, settings = config } = {}) {
     res.json({ results: await searchBooks(q, 8) });
   });
 
-  api.post('/books', async (req, res) => {
+  api.post('/books', requirePlace, async (req, res) => {
     const books = (Array.isArray(req.body?.books) ? req.body.books : [])
       .slice(0, 200)
       .map((b) => ({
@@ -167,7 +189,9 @@ export function createApp({ store, deps = {}, settings = config } = {}) {
       status: r.status,
       note: r.note,
       book: { id: r.book_id, title: r.book_title, author: r.book_author, cover: r.book_cover },
-      other: { name: iOwn ? r.borrower_name : r.owner_name },
+      other: iOwn
+        ? { name: r.borrower_name, place: placeOf({ building: r.borrower_building, locality: r.borrower_locality }) }
+        : { name: r.owner_name, place: placeOf({ building: r.owner_building, locality: r.owner_locality }) },
       otherPhone: otherShared ? store.memberById(iOwn ? r.borrower_id : r.owner_id)?.phone || null : null,
       iShared: Boolean(iOwn ? r.owner_shared : r.borrower_shared),
       createdAt: r.created_at,
@@ -182,7 +206,7 @@ export function createApp({ store, deps = {}, settings = config } = {}) {
     res.json({ requests: store.requestsFor(req.member.id).map((r) => viewRequest(r, req.member)) });
   });
 
-  api.post('/requests', async (req, res) => {
+  api.post('/requests', requirePlace, async (req, res) => {
     const r = await library.want(req.member, req.body?.bookId, req.body?.note);
     res.json({ request: viewRequest(r, req.member) });
   });

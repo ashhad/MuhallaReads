@@ -200,3 +200,9 @@ dialog::backdrop { background: rgb(0 0 0 / .45); }
 #sheet-form h3 { margin: 0; }
 #sheet-text:empty { display: none; }
 .row.end { flex-direction: row-reverse; justify-content: flex-start; }
+
+/* profile dialog */
+#profile-form { display: grid; gap: .7rem; }
+#profile-form h3 { margin: 0; }
+#profile-form label { display: grid; gap: .3rem; font-weight: 600; font-size: .9rem; }
+.place { color: var(--muted); font-size: .8rem; font-weight: 400; }

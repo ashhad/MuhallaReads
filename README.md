@@ -9,8 +9,10 @@ anyone** unless they choose to share it with one person.
 Everything happens in a chat with the library's WhatsApp number, plus an optional website for
 browsing and scanning books. Nothing to install.
 
-1. **Join:** message the library's number (with the community code, if one is set). Neighbours
-   see only the display name you choose, e.g. "Ayesha (Block C)".
+1. **Join:** message the library's number with the join code (if one is set), then answer two
+   quick questions: your **building or society** and your **locality** (at least one). Neighbours
+   see only your name plus those, e.g. "Ayesha · Green Park Tower, Saket", never a flat number
+   or address.
 2. **Add books:** type `add Dune by Frank Herbert`, send an ISBN, or send a **photo of your
    shelf**. On the website you can also scan barcodes one after another.
 3. **Find:** type any title or author. Results show which neighbours have it.
@@ -22,7 +24,7 @@ browsing and scanning books. Nothing to install.
    `returned 7` (or taps *Got it back* on the website).
 
 Also available: **notify me** (be told when a book you searched for gets added), `block`,
-`requests`, `my books`, `undo`, `name …`, `delete me` (removes your account and all your data),
+`requests`, `my books`, `undo`, `name …`, `building …`, `locality …`, `delete me` (removes your account and all your data),
 and `login` (sends a one-time link that signs you into the website, with no password and no phone
 number entry).
 
@@ -106,8 +108,8 @@ See `.env.example` for all of them. The main ones:
 
 | Variable | What it does |
 |---|---|
-| `COMMUNITY_NAME` | Name shown in the app and the bot |
-| `JOIN_CODE` | Code neighbours send (`join <code>`) to get in. Empty = open |
+| `COMMUNITY_NAME` | The library's name, shown in the app and the bot |
+| `JOIN_CODE` | Code new people send (`join <code>`) to get in. Empty = open. Changing it doesn't affect existing members |
 | `ADMIN_PHONES` | Numbers allowed to use `stats`, `members`, `remove member <id>` |
 | `LOAN_DAYS` | Loan length before reminders (default 21) |
 | `MONTHLY_TEMPLATE_LIMIT` | Cap on paid WhatsApp messages per month (default 200) |

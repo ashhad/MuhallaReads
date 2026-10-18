@@ -107,8 +107,9 @@
         <div>
           <div class="muted small">Neighbours see you as</div>
           <strong id="me-name"></strong>
+          <div class="muted small" id="me-place"></div>
         </div>
-        <button id="rename" class="btn small">Change</button>
+        <button id="edit-profile" class="btn small">Change</button>
       </div>
       <h2>My books <span id="mine-count" class="muted"></span></h2>
       <ul id="mine" class="list"></ul>
@@ -137,6 +138,24 @@
       <div class="row end">
         <button class="btn primary" value="ok" id="sheet-ok">OK</button>
         <button class="btn" value="cancel" formnovalidate>Cancel</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="profile">
+    <form id="profile-form">
+      <h3 id="profile-title">About you</h3>
+      <p class="muted small">
+        Shown next to your name so neighbours know roughly where you are. Give your building, your
+        locality, or both. Never your flat number or full address.
+      </p>
+      <label>Your name<input name="displayName" maxlength="40" autocomplete="name" required></label>
+      <label>Building or society<input name="building" maxlength="60" placeholder="e.g. Green Park Tower" autocomplete="off"></label>
+      <label>Locality or area<input name="locality" maxlength="60" placeholder="e.g. Saket" autocomplete="off"></label>
+      <p class="error" role="alert"></p>
+      <div class="row end">
+        <button class="btn primary" type="submit">Save</button>
+        <button class="btn" type="button" id="profile-cancel">Cancel</button>
       </div>
     </form>
   </dialog>

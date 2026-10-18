@@ -1,7 +1,8 @@
 // The WhatsApp bot's brain. whatsapp.js feeds it incoming messages; it replies via `send`.
 // Members only ever see each other's display names. Phone numbers stay on the server.
 import { looksLikeIsbn, normalizeIsbn } from './isbn.js';
-import { LibraryError } from './library.js';
+import { LibraryError, who } from './library.js';
+import { placeOf } from './db.js';
 
 const MAX_RESULTS = 5;
 const MAX_MESSAGE = 3900; // WhatsApp's limit is 4096 characters
@@ -18,7 +19,8 @@ export function helpText(communityName) {
     '🔔 `notify me`: after a search finds nothing',
     '📖 `my books` · ↩️ `undo` · 🗑️ `remove 12`',
     '🌐 `login`: open the website',
-    '👤 `name Ashhad (Block C)`: how neighbours see you',
+    '👤 `name Ashhad`: how neighbours see you',
+    '🏢 `building Green Park Tower` · 📍 `locality Saket`: where you are (shown with your name)',
     '',
     '🔒 Your number is never shown to anyone. `share 7` gives it to that one person, only if you choose.',
   ].join('\n');
@@ -36,10 +38,19 @@ export function parseBookLine(line) {
 }
 
 /** Display names: no WhatsApp formatting characters, no line breaks, 2–40 characters. */
-export function cleanName(s) {
-  const name = String(s || '').replace(/[*_~`\n\r\t]/g, '').replace(/\s+/g, ' ').trim().slice(0, 40);
+export function cleanName(s, max = 40) {
+  const name = String(s || '').replace(/[*_~`\n\r\t]/g, '').replace(/\s+/g, ' ').trim().slice(0, max);
   return name.length >= 2 ? name : '';
 }
+
+/** Building or locality: like a name, up to 60 characters. */
+export const cleanPlace = (s) => cleanName(s, 60);
+
+const ASK_BUILDING =
+  '🏢 What\'s your *building or society* name? e.g. _Green Park Tower_\n' +
+  'Only this and your locality are shown next to your name, never your flat number or address.';
+const ASK_LOCALITY = '📍 And your *locality or area*? e.g. _Saket_';
+const SKIP = [{ id: 'skip', title: 'Skip' }];
 
 const describe = (b) => `*${b.title}*${b.author ? ` — ${b.author}` : ''}`;
 const clip = (s) => (s.length > MAX_MESSAGE ? s.slice(0, MAX_MESSAGE - 20) + '\n…(more not shown)' : s);
@@ -64,6 +75,53 @@ const payloadRequestId = (p) => {
 export function createBot({ store, library, notifier, enrichAll, identifyBooks, settings }) {
   const lastEmptySearch = new Map(); // member id -> query, for "notify me"
   const confirmingDelete = new Set();
+  const setupStep = new Map(); // member id -> 'building' | 'locality' while answering the setup questions
+
+  /** First-time setup: building, then locality. At least one is required. */
+  async function setup(member, text, reply) {
+    const step = setupStep.get(member.id);
+    const skip = /^skip$/i.test(text);
+    if (step && !skip && isCommand(text)) {
+      // e.g. tapping a button from an older message: finish setup first
+      return reply(`Let's finish setting you up first.\n\n${step === 'building' ? ASK_BUILDING : ASK_LOCALITY}`, SKIP);
+    }
+    if (!step) {
+      setupStep.set(member.id, 'building');
+      return reply(ASK_BUILDING, SKIP);
+    }
+    if (step === 'building') {
+      if (!skip) {
+        const building = cleanPlace(text);
+        if (!building) return reply('Please send your building or society name, or tap *Skip*.', SKIP);
+        store.setPlace(member.id, { building, locality: member.locality });
+      }
+      setupStep.set(member.id, 'locality');
+      return reply(ASK_LOCALITY, store.memberById(member.id).building ? SKIP : undefined);
+    }
+    const locality = skip ? '' : cleanPlace(text);
+    if (!locality && !member.building) {
+      return reply('Please send at least your locality, so neighbours have a rough idea where you are. e.g. _Saket_');
+    }
+    if (locality) store.setPlace(member.id, { building: member.building, locality });
+    setupStep.delete(member.id);
+    const me = store.memberById(member.id);
+    return reply(
+      `✅ All set! Neighbours will see you as *${who(me)}*.\n` +
+        'Change it any time with `name …`, `building …` or `locality …`.\n\n' +
+        'Now type a book title to search, or `add <title>` to share one of yours. Send *help* for everything else.',
+    );
+  }
+
+  /** Changes building or locality later, keeping at least one of them. */
+  function changePlace(member, field, value, reply) {
+    const cleared = /^(none|remove|clear|-)$/i.test(value.trim());
+    const v = cleared ? '' : cleanPlace(value);
+    if (!v && !cleared) return reply(`Please give a ${field} of 2–60 characters.`);
+    const next = { building: member.building, locality: member.locality, [field]: v };
+    if (!next.building && !next.locality) return reply('Keep at least one of building or locality, so neighbours know roughly where you are.');
+    const me = store.setPlace(member.id, next);
+    return reply(`📍 Neighbours now see you as *${who(me)}*.`);
+  }
 
   async function addBooks(member, books, reply) {
     const enriched = await enrichAll(books);
@@ -94,10 +152,11 @@ export function createBot({ store, library, notifier, enrichAll, identifyBooks, 
     for (const g of groups.slice(0, MAX_RESULTS)) {
       lines.push(`📖 ${describe(g)}`);
       for (const c of g.copies) {
+        const owner = c.owner.place ? `${c.owner.name} · ${c.owner.place}` : c.owner.name;
         if (c.owner.id === member.id) lines.push('   • You');
-        else if (c.status === 'lent') lines.push(`   • ${c.owner.name} (lent out)`);
+        else if (c.status === 'lent') lines.push(`   • ${owner} (lent out)`);
         else {
-          lines.push(`   • ${c.owner.name} ✅ → *want ${c.bookId}*`);
+          lines.push(`   • ${owner} ✅ → *want ${c.bookId}*`);
           wantable.push({ ...c, title: g.title });
         }
       }
@@ -132,7 +191,10 @@ export function createBot({ store, library, notifier, enrichAll, identifyBooks, 
     const lines = [];
     if (incoming.length) {
       lines.push('📥 *Asking for your books*');
-      for (const r of incoming) lines.push(`#${r.id} ${r.borrower_name} → *${r.book_title}*: *accept ${r.id}* / *decline ${r.id}*`);
+      for (const r of incoming) {
+        const borrower = who({ name: r.borrower_name, building: r.borrower_building, locality: r.borrower_locality });
+        lines.push(`#${r.id} ${borrower} → *${r.book_title}*: *accept ${r.id}* / *decline ${r.id}*`);
+      }
       lines.push('');
     }
     if (lending.length) {
@@ -170,6 +232,8 @@ export function createBot({ store, library, notifier, enrichAll, identifyBooks, 
         return reply(`👤 Neighbours will now see you as *${name}*.`);
       },
     ],
+    [/^building\s+([\s\S]+)$/i, (m, x, reply) => changePlace(m, 'building', x[1], reply)],
+    [/^(locality|area)\s+([\s\S]+)$/i, (m, x, reply) => changePlace(m, 'locality', x[2], reply)],
     [
       /^(login|log in|website|web|link)$/i,
       (m, _, reply) => {
@@ -368,21 +432,25 @@ export function createBot({ store, library, notifier, enrichAll, identifyBooks, 
       const code = join?.[1]?.trim() || '';
       if (settings.joinCode && code.toLowerCase() !== settings.joinCode.toLowerCase()) {
         return reply(
-          `👋 Welcome to *${settings.communityName}*!\nTo join, reply: \`join <community code>\`\n(Ask a neighbour for the code.)`,
+          `👋 Welcome to *${settings.communityName}*!\nTo join, reply: \`join <code>\`\n(Ask a neighbour for the code.)`,
         );
       }
       const name = cleanName(msg.profileName) || 'Neighbour';
       member = store.createMember({ name, phone: msg.phone });
-      await reply(
-        `🎉 Welcome, ${name}! Neighbours will see you as *${name}*. Change it with \`name <your name>\`.\n\n` +
-          helpText(settings.communityName),
-      );
       store.touchInbound(member.id);
-      if (join || !text || /^(hi|hello|hey|help|start|login)\W*$/i.test(text)) return;
+      await reply(
+        `🎉 Welcome, ${name}! Neighbours will see you as *${name}* (change it later with \`name …\`).\n` +
+          'Two quick questions so they have a rough idea where you are:',
+      );
+      return setup(member, '', reply);
     }
 
     store.touchInbound(member.id);
     member = store.memberById(member.id);
+
+    // Setup isn't finished until there's a building or locality.
+    if (setupStep.has(member.id) || !placeOf(member)) return setup(member, text, reply);
+
     const delivered = await notifier.flush(member, { skipRequestId: payloadRequestId(msg.payload) });
 
     try {

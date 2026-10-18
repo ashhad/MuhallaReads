@@ -37,8 +37,9 @@ const call = async (path, { token, method = 'GET', body } = {}) => {
   return { status: res.status, data: JSON.parse(text), raw: text };
 };
 
-async function signIn(phone, name) {
+async function signIn(phone, name, place = { building: 'Green Park Tower', locality: 'Saket' }) {
   const m = store.memberByPhone(phone) || store.createMember({ name, phone });
+  if (place) store.setPlace(m.id, place);
   const { data } = await call('/api/login', { method: 'POST', body: { code: store.createLoginCode(m.id) } });
   return data.token;
 }
@@ -63,7 +64,7 @@ test('borrowing over the API never leaks phone numbers until shared', async () =
   const dune = added.data.added.find((x) => x.title === 'Dune');
 
   const search = await call('/api/books?q=dune', { token: b });
-  assert.equal(search.data.results[0].copies[0].owner.name, 'Ayesha');
+  assert.deepEqual(search.data.results[0].copies[0].owner, { id: store.memberByPhone(AYESHA).id, name: 'Ayesha', place: 'Green Park Tower, Saket' });
   assert.doesNotMatch(search.raw, /9198000/);
 
   const req = await call('/api/requests', { method: 'POST', token: b, body: { bookId: dune.id, note: 'Sunday?' } });
@@ -102,4 +103,18 @@ test('wishes, rename and account deletion', async () => {
   await call('/api/me', { method: 'DELETE', token: t });
   assert.equal((await call('/api/me', { token: t })).status, 401);
   assert.equal(store.memberByPhone('919822222222'), undefined);
+});
+
+test('a building or locality is required before adding or requesting books', async () => {
+  const t = await signIn('919833333333', 'Dev', null);
+  const me = (await call('/api/me', { token: t })).data.member;
+  assert.equal(me.place, '');
+  const blocked = await call('/api/books', { method: 'POST', token: t, body: { books: [{ title: 'Ikigai' }] } });
+  assert.equal(blocked.status, 400);
+  assert.match(blocked.data.error, /building or locality/);
+
+  assert.equal((await call('/api/me', { method: 'PATCH', token: t, body: { building: '', locality: ' ' } })).status, 400);
+  const ok = await call('/api/me', { method: 'PATCH', token: t, body: { building: '', locality: 'Saket' } });
+  assert.equal(ok.data.member.place, 'Saket');
+  assert.equal((await call('/api/books', { method: 'POST', token: t, body: { books: [{ title: 'Ikigai' }] } })).status, 200);
 });

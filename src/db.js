@@ -10,6 +10,8 @@ CREATE TABLE IF NOT EXISTS members (
   id              INTEGER PRIMARY KEY,
   name            TEXT NOT NULL,
   phone           TEXT NOT NULL UNIQUE,
+  building        TEXT NOT NULL DEFAULT '',
+  locality        TEXT NOT NULL DEFAULT '',
   last_inbound_at TEXT,
   created_at      TEXT NOT NULL
 );
@@ -111,8 +113,20 @@ export function openDb(file) {
   const db = new DatabaseSync(file);
   db.exec('PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;');
   db.exec(SCHEMA);
+  migrate(db);
   return new Store(db);
 }
+
+/** Adds columns introduced after a database was first created. */
+function migrate(db) {
+  const memberCols = new Set(db.prepare('PRAGMA table_info(members)').all().map((c) => c.name));
+  for (const col of ['building', 'locality']) {
+    if (!memberCols.has(col)) db.exec(`ALTER TABLE members ADD COLUMN ${col} TEXT NOT NULL DEFAULT ''`);
+  }
+}
+
+/** "Green Park Tower, Saket": the rough location shown next to a member's name. Never a full address. */
+export const placeOf = (m) => [m?.building, m?.locality].filter(Boolean).join(', ');
 
 const now = () => new Date().toISOString();
 const randomToken = () => crypto.randomBytes(24).toString('base64url');
@@ -135,7 +149,8 @@ export function matchesQuery(book, query) {
 
 const REQUEST_SELECT = `
   SELECT r.*, b.title AS book_title, b.author AS book_author, b.cover_url AS book_cover,
-         bo.name AS borrower_name, ow.name AS owner_name
+         bo.name AS borrower_name, bo.building AS borrower_building, bo.locality AS borrower_locality,
+         ow.name AS owner_name, ow.building AS owner_building, ow.locality AS owner_locality
   FROM requests r
   JOIN books b ON b.id = r.book_id
   JOIN members bo ON bo.id = r.borrower_id
@@ -162,6 +177,10 @@ export class Store {
 
   createMember({ name, phone }) {
     return this.q('INSERT INTO members (name, phone, created_at) VALUES (?, ?, ?) RETURNING *').get(name, phone, now());
+  }
+
+  setPlace(id, { building, locality }) {
+    return this.q('UPDATE members SET building = ?, locality = ? WHERE id = ? RETURNING *').get(building, locality, id);
   }
 
   renameMember(id, name) {
@@ -279,7 +298,8 @@ export class Store {
   search(query, { limit = 100 } = {}) {
     const isbnQuery = String(query || '').replace(/[^0-9Xx]/g, '');
     const rows = this.q(
-      `SELECT b.*, m.name AS owner_name FROM books b JOIN members m ON m.id = b.owner_id
+      `SELECT b.*, m.name AS owner_name, m.building AS owner_building, m.locality AS owner_locality
+       FROM books b JOIN members m ON m.id = b.owner_id
        ORDER BY b.created_at DESC, b.id DESC`,
     ).all();
 
@@ -299,7 +319,11 @@ export class Store {
       }
       g.cover ||= r.cover_url;
       g.isbn ||= r.isbn;
-      g.copies.push({ bookId: r.id, status: r.status, owner: { id: r.owner_id, name: r.owner_name } });
+      g.copies.push({
+        bookId: r.id,
+        status: r.status,
+        owner: { id: r.owner_id, name: r.owner_name, place: placeOf({ building: r.owner_building, locality: r.owner_locality }) },
+      });
     }
     return [...groups.values()].slice(0, limit);
   }
