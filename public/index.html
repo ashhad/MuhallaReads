@@ -1,0 +1,111 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>MuhallaReads</title>
+  <meta name="description" content="Our neighbourhood library — see who has which book and share yours.">
+  <meta name="theme-color" content="#7a3e1d">
+  <link rel="manifest" href="/manifest.webmanifest">
+  <link rel="icon" href="/icon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="/icon.svg">
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <!-- Join -->
+  <section id="join" class="screen" hidden>
+    <div class="join-card">
+      <img src="/icon.svg" alt="" class="join-logo">
+      <h1 class="community-name">MuhallaReads</h1>
+      <p class="muted">Our neighbourhood library. Add the books you own, find the ones you need.</p>
+      <p class="muted small stats"></p>
+      <form id="join-form">
+        <label>Your name<input name="name" autocomplete="name" required maxlength="60"></label>
+        <label>WhatsApp number<input name="phone" type="tel" autocomplete="tel" required placeholder="+91 98xxxxxxxx"></label>
+        <label id="code-field" hidden>Community code<input name="code" autocomplete="off"></label>
+        <button class="btn primary" type="submit">Join</button>
+        <p class="error" role="alert"></p>
+      </form>
+      <p class="muted small">Your number is shown only to members, so they can message you to borrow a book.</p>
+    </div>
+  </section>
+
+  <!-- App -->
+  <section id="app" class="screen" hidden>
+    <header class="topbar">
+      <span class="brand"><img src="/icon.svg" alt=""><span class="community-name">MuhallaReads</span></span>
+      <a id="bot-link" class="chip" hidden target="_blank" rel="noopener">WhatsApp bot</a>
+    </header>
+
+    <!-- Find -->
+    <main id="view-find" class="view">
+      <div class="search-bar">
+        <input id="search" type="search" placeholder="Search title, author or ISBN" autocomplete="off" enterkeyhint="search">
+      </div>
+      <p id="find-summary" class="muted small"></p>
+      <ul id="results" class="list"></ul>
+    </main>
+
+    <!-- Add -->
+    <main id="view-add" class="view" hidden>
+      <h2>Add your books</h2>
+      <div class="add-modes">
+        <button class="mode" data-mode="type"><span class="mode-icon">⌨️</span>Type</button>
+        <button class="mode" data-mode="scan"><span class="mode-icon">▥</span>Scan barcodes</button>
+        <button class="mode" data-mode="photo" id="photo-mode" hidden><span class="mode-icon">📷</span>Shelf photo</button>
+      </div>
+
+      <div id="panel-type" class="panel" hidden>
+        <form id="type-form" class="row">
+          <input id="type-input" placeholder="Title, “Title by Author” or ISBN" autocomplete="off" enterkeyhint="search">
+          <button class="btn" type="submit">Find</button>
+        </form>
+        <ul id="suggestions" class="list compact"></ul>
+      </div>
+
+      <div id="panel-scan" class="panel" hidden>
+        <div id="reader"></div>
+        <p class="muted small">Point the camera at the barcode on the back cover. Scan as many books as you like — each one lands in the list below.</p>
+        <button id="stop-scan" class="btn">Done scanning</button>
+      </div>
+
+      <div id="panel-photo" class="panel" hidden>
+        <p class="muted small">Take a clear photo of a book cover, a pile, or your shelf with the spines readable.</p>
+        <label class="btn primary file-btn">Take or choose photo<input id="photo-input" type="file" accept="image/*" capture="environment" hidden></label>
+        <p id="photo-status" class="muted small"></p>
+      </div>
+
+      <section id="tray" hidden>
+        <h3>Ready to add</h3>
+        <ul id="tray-list" class="list compact"></ul>
+        <button id="add-all" class="btn primary wide">Add books</button>
+      </section>
+      <p id="add-message" class="notice" hidden></p>
+    </main>
+
+    <!-- Mine -->
+    <main id="view-mine" class="view" hidden>
+      <div class="me">
+        <div>
+          <strong id="me-name"></strong>
+          <div class="muted small" id="me-phone"></div>
+        </div>
+        <button id="logout" class="btn small">Sign out</button>
+      </div>
+      <h2>My books <span id="mine-count" class="muted"></span></h2>
+      <ul id="mine" class="list"></ul>
+    </main>
+
+    <nav class="tabs">
+      <button data-view="find" class="active"><span>🔎</span>Find</button>
+      <button data-view="add"><span>➕</span>Add</button>
+      <button data-view="mine"><span>📚</span>My books</button>
+    </nav>
+  </section>
+
+  <div id="toast" role="status" hidden></div>
+
+  <script src="/vendor/html5-qrcode.min.js" defer></script>
+  <script src="/app.js" defer></script>
+</body>
+</html>

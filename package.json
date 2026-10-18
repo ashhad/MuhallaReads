@@ -1,0 +1,31 @@
+{
+  "name": "muhallareads",
+  "version": "1.0.0",
+  "description": "A community library catalogue: add the books you own, find who has the book you need. Web app + WhatsApp bot.",
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node --disable-warning=ExperimentalWarning --env-file-if-exists=.env src/server.js",
+    "dev": "node --disable-warning=ExperimentalWarning --env-file-if-exists=.env --watch src/server.js",
+    "test": "node --disable-warning=ExperimentalWarning --test"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ashhad/MuhallaReads.git"
+  },
+  "author": "",
+  "license": "MIT",
+  "bugs": {
+    "url": "https://github.com/ashhad/MuhallaReads/issues"
+  },
+  "homepage": "https://github.com/ashhad/MuhallaReads#readme",
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.135.0",
+    "express": "^5.3.0",
+    "html5-qrcode": "^2.3.8"
+  },
+  "type": "module",
+  "private": true,
+  "engines": {
+    "node": ">=22.13"
+  }
+}
