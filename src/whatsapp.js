@@ -103,18 +103,37 @@ export function whatsappRouter({ bot, transport, config }) {
 
   router.get('/webhooks/whatsapp', (req, res) => {
     if (wa.verifyToken && req.query['hub.mode'] === 'subscribe' && req.query['hub.verify_token'] === wa.verifyToken) {
+      console.log('WhatsApp webhook: verified by Meta');
       return res.send(String(req.query['hub.challenge'] || ''));
     }
+    console.warn('WhatsApp webhook: verification refused (verify token does not match WHATSAPP_VERIFY_TOKEN)');
     res.sendStatus(403);
   });
 
   router.post('/webhooks/whatsapp', (req, res) => {
-    if (!transport) return res.sendStatus(404);
+    if (!transport) {
+      console.warn('WhatsApp webhook: delivery ignored because WHATSAPP_TOKEN / WHATSAPP_PHONE_NUMBER_ID are not set');
+      return res.sendStatus(404);
+    }
     if (wa.appSecret) {
       const expected = 'sha256=' + crypto.createHmac('sha256', wa.appSecret).update(req.rawBody || '').digest('hex');
-      if (!safeEqual(expected, req.get('x-hub-signature-256') || '')) return res.sendStatus(401);
+      if (!safeEqual(expected, req.get('x-hub-signature-256') || '')) {
+        console.warn('WhatsApp webhook: signature mismatch, delivery rejected (check WHATSAPP_APP_SECRET)');
+        return res.sendStatus(401);
+      }
     }
     res.sendStatus(200); // acknowledge immediately; replies are sent asynchronously
+
+    // Counts only: phone numbers and message text are never logged.
+    const changes = (req.body?.entry || []).flatMap((e) => e.changes || []);
+    const count = (key) => changes.reduce((n, c) => n + (c.value?.[key]?.length || 0), 0);
+    console.log(`WhatsApp webhook: ${count('messages')} message(s), ${count('statuses')} status update(s)`);
+    for (const st of changes.flatMap((c) => c.value?.statuses || [])) {
+      if (st.status === 'failed') {
+        const e = st.errors?.[0] || {};
+        console.warn(`WhatsApp: a message from the bot failed to deliver: ${e.code} ${e.title || ''} ${e.error_data?.details || ''}`);
+      }
+    }
 
     for (const entry of req.body?.entry || []) {
       for (const change of entry.changes || []) {
