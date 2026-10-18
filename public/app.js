@@ -586,7 +586,8 @@ function shrinkImage(file, maxSide) {
 // Tray: books waiting to be added
 
 function addToTray(books) {
-  for (const b of books) state.tray.push({ checked: true, ...b });
+  // Keep the same objects: a scanned barcode's entry is filled in when its lookup finishes.
+  for (const b of books) state.tray.push(Object.assign(b, { checked: b.checked ?? true }));
   renderTray();
 }
 

@@ -6,14 +6,19 @@ import { normText } from './db.js';
 const TIMEOUT_MS = 8000;
 
 async function getJson(url) {
+  const host = new URL(url).host;
   try {
     const res = await fetch(url, {
       signal: AbortSignal.timeout(TIMEOUT_MS),
       headers: { 'User-Agent': 'MuhallaReads/1.0 (community library catalogue)' },
     });
-    if (!res.ok) return null;
+    if (!res.ok) {
+      console.warn(`Book lookup: ${host} answered ${res.status}`);
+      return null;
+    }
     return await res.json();
-  } catch {
+  } catch (err) {
+    console.warn(`Book lookup: ${host} failed (${err.name}: ${err.message})`);
     return null;
   }
 }
