@@ -255,6 +255,16 @@ export function createApp({ store, deps = {}, settings = config } = {}) {
   app.get('/vendor/html5-qrcode.min.js', (_req, res) =>
     res.sendFile(path.join(root, 'node_modules/html5-qrcode/html5-qrcode.min.js')),
   );
+  // Self-hosted fonts (Latin, variable weight), so no font CDN sees members' visits.
+  const fonts = {
+    'fraunces.woff2': '@fontsource-variable/fraunces/files/fraunces-latin-wght-normal.woff2',
+    'instrument-sans.woff2': '@fontsource-variable/instrument-sans/files/instrument-sans-latin-wght-normal.woff2',
+  };
+  app.get('/fonts/:file', (req, res, next) =>
+    Object.hasOwn(fonts, req.params.file)
+      ? res.sendFile(path.join(root, 'node_modules', fonts[req.params.file]), { maxAge: '30d' })
+      : next(),
+  );
   app.use(express.static(path.join(root, 'public')));
 
   app.use((err, _req, res, _next) => {

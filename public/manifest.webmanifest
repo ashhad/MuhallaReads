@@ -4,7 +4,7 @@
   "description": "Our neighbourhood library — see who has which book and share yours.",
   "start_url": "/",
   "display": "standalone",
-  "background_color": "#faf6f0",
-  "theme_color": "#7a3e1d",
+  "background_color": "#0d1b26",
+  "theme_color": "#0d1b26",
   "icons": [{ "src": "/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }]
 }
