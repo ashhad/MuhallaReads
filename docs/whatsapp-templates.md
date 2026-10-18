@@ -82,12 +82,15 @@ Samples: `{{1}}` = `Dune`, `{{2}}` = `Ayesha`, `{{3}}` = `8 Nov`
 
 ### 4. `wishlist_match`
 
-Sent when a book someone asked to be told about gets added.
+Sent when a book someone asked to be told about gets added. Keep the wording plain: phrases like
+"Good news" or "now available" make Meta treat it as Marketing (about 7× the price, and often not
+delivered). If Meta still won't accept it as Utility, skip this template: wishlist alerts then
+arrive for free the next time the person messages the bot, and always show in the app.
 
 **Body**
 
 ```
-Good news: "{{1}}", which you asked about, is now available from {{2}}. Open the app to request it.
+Hi, this is the alert you set for "{{1}}". A copy has now been listed by {{2}}. Open the app to see it.
 ```
 
 Samples: `{{1}}` = `Gitanjali`, `{{2}}` = `Ayesha (Green Park Tower, Saket)`
