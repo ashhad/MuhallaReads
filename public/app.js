@@ -539,7 +539,7 @@ async function onBarcode(code) {
   try {
     const { results } = await api(`/api/lookup?isbn=${digits}`);
     Object.assign(placeholder, results[0] || {}, { loading: false });
-    toast(results[0] ? `Found: ${results[0].title}` : `ISBN ${digits}: please type the title`);
+    toast(results[0] ? `Found: ${results[0].title}` : 'Not found in the book databases. Please type its title.');
   } catch {
     placeholder.loading = false;
   }
@@ -604,14 +604,13 @@ function renderTray() {
             ? `<div class="title muted">Looking up ISBN ${esc(b.isbn)}…</div>`
             : b.title
               ? `<div class="title">${esc(b.title)}</div><div class="author">${esc(b.author)}</div>`
-              : `<input class="fix-title" data-i="${i}" placeholder="Type the title (ISBN ${esc(b.isbn)})">`
+              : `<input class="fix-title" data-i="${i}" placeholder="Book title, e.g. Dune by Frank Herbert">
+                 <div class="author">Not found automatically · ISBN ${esc(b.isbn)}</div>`
         }</div>
         <button class="icon-btn" data-remove="${i}" aria-label="Remove">✕</button></li>`,
     )
     .join('');
-  const n = tray.filter((b) => b.checked && b.title).length;
-  $('#add-all').textContent = `Add ${n} book${n === 1 ? '' : 's'}`;
-  $('#add-all').disabled = !n;
+  updateAddButton();
 
   $$('#tray-list input[type=checkbox]').forEach((cb) =>
     cb.addEventListener('change', () => {
@@ -619,12 +618,14 @@ function renderTray() {
       renderTray();
     }),
   );
-  $$('#tray-list .fix-title').forEach((inp) =>
-    inp.addEventListener('change', () => {
+  $$('#tray-list .fix-title').forEach((inp) => {
+    // Save as they type so "Add" is enabled without first leaving the box.
+    inp.addEventListener('input', () => {
       Object.assign(tray[inp.dataset.i], parseTyped(inp.value.trim()));
-      renderTray();
-    }),
-  );
+      updateAddButton();
+    });
+    inp.addEventListener('change', renderTray);
+  });
   $$('#tray-list [data-remove]').forEach((btn) =>
     btn.addEventListener('click', () => {
       const [b] = tray.splice(Number(btn.dataset.remove), 1);
@@ -632,6 +633,12 @@ function renderTray() {
       renderTray();
     }),
   );
+}
+
+function updateAddButton() {
+  const n = state.tray.filter((b) => b.checked && b.title).length;
+  $('#add-all').textContent = `Add ${n} book${n === 1 ? '' : 's'}`;
+  $('#add-all').disabled = !n;
 }
 
 $('#add-all').addEventListener('click', async () => {
