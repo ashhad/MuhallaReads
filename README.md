@@ -146,5 +146,5 @@ src/lookup.js     book details from Open Library, with Google Books as fallback
 src/vision.js     finding books in photos with Claude (and what each call cost)
 src/photos.js     hard limits and cost alerts for photo scanning
 scripts/          admin helpers
-deploy/oracle/    free-hosting setup script
+deploy/oracle/    free-hosting setup script, backups, two-factor SSH
 ```

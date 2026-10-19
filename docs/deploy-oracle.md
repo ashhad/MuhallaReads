@@ -159,6 +159,26 @@ sudo chown muhallareads:muhallareads /var/lib/muhallareads/muhallareads.db
 sudo systemctl start muhallareads
 ```
 
+## Two-factor SSH (recommended)
+
+Make logging in to the VM need **both** your SSH key **and** a 6-digit code from an authenticator
+app on your phone, so a stolen key alone isn't enough:
+
+```bash
+cd ~/MuhallaReads && git pull
+sudo bash deploy/oracle/ssh-mfa.sh
+```
+
+It shows a QR code: scan it with Google Authenticator, Microsoft Authenticator, Aegis or similar,
+and **write down the emergency scratch codes** it prints (each logs you in once if you lose your
+phone). Keep that SSH window open, log in from a second terminal to check the code works, and only
+then close the first one. If the new login fails, run `sudo bash deploy/oracle/ssh-mfa.sh --undo` in
+the window that's still open.
+
+If you're ever locked out completely, Oracle's **Cloud Shell** won't help (it uses SSH too). Use the
+instance's **Console connection** in the Oracle Cloud console (Compute → Instances → your VM →
+Console connection) to get in and run the `--undo` command.
+
 ## Keeping it free
 
 - **The VM** costs nothing while you stay within Always Free limits. Oracle may *reclaim* Always
