@@ -90,6 +90,7 @@ test('help, admin commands and account deletion', async () => {
   const w = await twoMembers();
   assert.match(await w.say(AYESHA, 'help'), /Admin: `stats`/); // Ayesha is an admin in the test settings
   assert.doesNotMatch(await w.say(BILAL, 'help'), /Admin/);
+  assert.doesNotMatch(await w.say(BILAL, 'help'), /photo of your whole shelf/); // photo scanning is off here
   assert.match(await w.say(AYESHA, 'stats'), /2 members/);
   assert.match(await w.say(BILAL, 'stats'), /happen in the app/); // not an admin
   assert.match(await w.say(AYESHA, 'members'), /Bilal/);
@@ -229,4 +230,11 @@ test('marking a lent book available closes its loan', async () => {
   await w.library.decide(w.member(AYESHA), r.id, true);
   await w.library.setAvailability(w.member(AYESHA), dune.id, 'available');
   assert.equal(w.store.requestById(r.id).status, 'returned');
+});
+
+test('help and photo replies mention shelf photos when photo scanning is on', async () => {
+  const w = makeWorld({ settings: { anthropicApiKey: 'sk-test' } });
+  await w.join(AYESHA, 'Ayesha');
+  assert.match(await w.say(AYESHA, 'help'), /one photo of your whole shelf/);
+  assert.match(await w.say(AYESHA, '', { other: 'image' }), /Add › Shelf photo/);
 });

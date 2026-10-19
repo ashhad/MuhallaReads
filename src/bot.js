@@ -16,11 +16,14 @@ export function cleanName(s, max = 40) {
 /** Building or locality: like a name, up to 60 characters. */
 export const cleanPlace = (s) => cleanName(s, 60);
 
-export function helpText(communityName, { admin = false } = {}) {
+export function helpText(communityName, { admin = false, photos = false } = {}) {
+  const adding = photos
+    ? 'add yours (one photo of your whole shelf, a barcode scan, or the title)'
+    : 'add yours (scan the barcode or type the title)';
   return [
     `📚 *${communityName}*: our neighbourhood library`,
     '',
-    'Everything happens in the app: find books, add yours (scan the barcode or type the title), requests and private chat.',
+    `Everything happens in the app: find books, ${adding}, requests and private chat.`,
     '🌐 `login`: get a sign-in link',
     '',
     'Here on WhatsApp you get notifications (requests, replies, reminders) and can manage your account:',
@@ -113,7 +116,7 @@ export function createBot({ store, library, notifier, settings }) {
 
   // Each command: [pattern, handler(member, match, reply)].
   const commands = [
-    [/^(help|menu|\?)\W*$/i, (m, _, reply) => reply(helpText(settings.communityName, { admin: isAdmin(m) }))],
+    [/^(help|menu|\?)\W*$/i, (m, _, reply) => reply(helpText(settings.communityName, { admin: isAdmin(m), photos: Boolean(settings.anthropicApiKey) }))],
     [/^join\b/i, (m, _, reply) => openAppReply(m, reply, `You're already a member, ${m.name}! 🙂`)],
     [/^(login|log in|sign in|website|web|link|app|open)$/i, (m, _, reply) => openAppReply(m, reply, '🌐 Here\'s your sign-in link.')],
     [
@@ -226,7 +229,9 @@ export function createBot({ store, library, notifier, settings }) {
 
     if (delivered && !msg.other) return; // they were just catching up on notifications
     const intro = msg.other === 'image'
-      ? '📷 Thanks! Adding books works best in the app: scan the barcode or type the title.'
+      ? settings.anthropicApiKey
+        ? '📷 Thanks! Add books in the app instead: tap Add › Shelf photo and it reads your whole shelf at once.'
+        : '📷 Thanks! Adding books works best in the app: scan the barcode or type the title.'
       : '📚 Searching, adding books, requests and chat all happen in the app.';
     return openAppReply(member, reply, `${intro}\nSend *help* to see what you can do here.`);
   }
