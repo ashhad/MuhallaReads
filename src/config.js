@@ -2,7 +2,15 @@ import path from 'node:path';
 
 const env = process.env;
 const digits = (s) => String(s || '').replace(/\D/g, '');
-const num = (v, fallback) => (v === undefined || v === '' ? fallback : Number(v));
+/** A number setting. Ignores currency signs and spaces ("4$", "$ 4"); anything unreadable uses the default. */
+function num(name, fallback) {
+  const raw = env[name];
+  if (raw === undefined || raw.trim() === '') return fallback;
+  const n = Number(raw.replace(/[$₹,\s]/g, ''));
+  if (Number.isFinite(n) && n >= 0) return n;
+  console.warn(`Setting ${name}="${raw}" is not a number; using ${fallback}.`);
+  return fallback;
+}
 
 export const config = {
   port: Number(env.PORT || 3000),
@@ -35,9 +43,9 @@ export const config = {
   anthropicApiKey: env.ANTHROPIC_API_KEY || '',
   claudeModel: env.CLAUDE_MODEL || 'claude-haiku-5-5',
   // Hard limits (see src/photos.js): per member per 24 hours, and for everyone per month.
-  photoDailyLimit: num(env.PHOTO_DAILY_LIMIT, 10),
-  photoMonthlyLimit: num(env.PHOTO_MONTHLY_LIMIT, 300),
-  photoMonthlyBudgetUsd: num(env.PHOTO_MONTHLY_BUDGET_USD, 1),
+  photoDailyLimit: num('PHOTO_DAILY_LIMIT', 10),
+  photoMonthlyLimit: num('PHOTO_MONTHLY_LIMIT', 300),
+  photoMonthlyBudgetUsd: num('PHOTO_MONTHLY_BUDGET_USD', 1),
 
   googleBooksApiKey: env.GOOGLE_BOOKS_API_KEY || '',
 

@@ -90,3 +90,26 @@ test('admins get a weekly summary on Monday mornings, only in weeks with photos'
   assert.match(w.transport.to(AYESHA).at(-1).text, /Weekly photo scanning check: 1 photos last week, costing \$0\.00/);
   assert.equal(await photos.weeklySummary(), false); // once a week
 });
+
+test('budget settings accept currency signs; unreadable values fall back to the default', async () => {
+  const load = async (value) => {
+    process.env.PHOTO_MONTHLY_BUDGET_USD = value;
+    const { config } = await import(`../src/config.js?${encodeURIComponent(value)}`);
+    return config.photoMonthlyBudgetUsd;
+  };
+  const warn = console.warn;
+  console.warn = () => {};
+  try {
+    assert.equal(await load('4$'), 4);
+    assert.equal(await load('$ 2.5'), 2.5);
+    assert.equal(await load('four'), 1);
+  } finally {
+    console.warn = warn;
+    delete process.env.PHOTO_MONTHLY_BUDGET_USD;
+  }
+});
+
+test('a budget that is not a number pauses scanning instead of removing the cap', async () => {
+  const { w, photos, read } = await world({ photoMonthlyBudgetUsd: NaN });
+  await assert.rejects(photos.scan(w.member(BILAL), read(0)), /paused until next month/);
+});

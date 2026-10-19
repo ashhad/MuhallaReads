@@ -30,7 +30,7 @@ export function createPhotoLimits({ store, notifier, settings, clock = () => new
   /** How much of this month's limits is used, in percent (whichever of budget and photo count is further). */
   const level = (u) =>
     Math.max(
-      u.budgetUsd > 0 ? (u.costUsd / u.budgetUsd) * 100 : 100,
+      u.budgetUsd > 0 ? (u.costUsd / u.budgetUsd) * 100 : 100, // a budget of 0 (or one that isn't a number) means paused
       u.photoLimit > 0 ? (u.photos / u.photoLimit) * 100 : 100,
     );
 
