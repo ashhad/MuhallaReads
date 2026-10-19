@@ -175,9 +175,10 @@ phone). Keep that SSH window open, log in from a second terminal to check the co
 then close the first one. If the new login fails, run `sudo bash deploy/oracle/ssh-mfa.sh --undo` in
 the window that's still open.
 
-If you're ever locked out completely, Oracle's **Cloud Shell** won't help (it uses SSH too). Use the
-instance's **Console connection** in the Oracle Cloud console (Compute → Instances → your VM →
-Console connection) to get in and run the `--undo` command.
+**Before you start, give your user a password** with `sudo passwd ubuntu`. SSH still won't accept it
+(that stays key + code), but it's what lets you in through Oracle's rescue console if you're ever
+locked out: Compute → Instances → your VM → **Console connection** → Launch Cloud Shell connection,
+log in as `ubuntu` with that password, and run `sudo bash ~/MuhallaReads/deploy/oracle/ssh-mfa.sh --undo`.
 
 ## Keeping it free
 

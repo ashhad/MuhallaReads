@@ -42,6 +42,14 @@ fi
 grep -qiE '^\s*Include\s+/etc/ssh/sshd_config\.d/' /etc/ssh/sshd_config ||
   die "This server's SSH config doesn't read /etc/ssh/sshd_config.d/, so this script can't safely change it."
 
+# Oracle's rescue console (Console connection) logs in with a password, which cloud images don't set.
+if [[ $(passwd -S "$USER_NAME" 2>/dev/null | awk '{print $2}') != P ]]; then
+  echo "Note: $USER_NAME has no password. SSH won't use one, but Oracle's rescue console (Console connection)"
+  echo "needs it if you're ever locked out. Set one first with:  sudo passwd $USER_NAME"
+  read -r -p "Continue without a rescue password? [y/N] " ok
+  [[ $ok =~ ^[Yy]$ ]] || exit 0
+fi
+
 step "Installing the authenticator module"
 DEBIAN_FRONTEND=noninteractive apt-get install -y -qq libpam-google-authenticator >/dev/null
 
