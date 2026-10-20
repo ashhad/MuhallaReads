@@ -2,7 +2,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import express from 'express';
 import { config, visionEnabled, whatsappEnabled } from './config.js';
-import { openDb, placeOf } from './db.js';
+import { openDb, placeOf, normText } from './db.js';
 import { normalizeIsbn, looksLikeIsbn } from './isbn.js';
 import * as lookup from './lookup.js';
 import { identifyBooks, parseDataUrl, VisionError } from './vision.js';
@@ -27,6 +27,7 @@ export function createApp({ store, deps = {}, settings = config } = {}) {
   const identify = deps.identifyBooks || identifyBooks;
   const lookupIsbn = deps.lookupIsbn || lookup.lookupIsbn;
   const searchBooks = deps.searchBooks || lookup.searchBooks;
+  const bookDetails = deps.bookDetails || lookup.bookDetails;
   const canSeePhotos = deps.identifyBooks ? () => true : visionEnabled;
   const transport =
     deps.transport !== undefined ? deps.transport : whatsappEnabled(settings) ? createMetaTransport(settings.whatsapp) : null;
@@ -147,6 +148,23 @@ export function createApp({ store, deps = {}, settings = config } = {}) {
       return res.json({ results: hit ? [hit] : [], isbn: normalizeIsbn(q) });
     }
     res.json({ results: await searchBooks(q, 8) });
+  });
+
+  // Introduction, year, pages and genre for the book card. Looked up by the server (so Google never
+  // sees members' devices) and cached: found books for 30 days, misses for 3.
+  const DAY = 86400_000;
+  api.get('/book-info', async (req, res) => {
+    const isbn = normalizeIsbn(req.query.isbn);
+    const title = String(req.query.title || '').trim().slice(0, 300);
+    const author = String(req.query.author || '').trim().slice(0, 200);
+    if (!isbn && !title) throw new HttpError(400, 'Which book?');
+    const key = isbn || `${normText(title)}|${normText(author)}`;
+    let info = store.cachedBookInfo(key, (data) => (data ? 30 : 3) * DAY);
+    if (info === undefined) {
+      info = await bookDetails({ isbn, title, author }).catch(() => null);
+      store.cacheBookInfo(key, info);
+    }
+    res.json({ info });
   });
 
   api.post('/books', requirePlace, async (req, res) => {

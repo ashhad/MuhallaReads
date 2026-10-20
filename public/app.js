@@ -330,51 +330,129 @@ async function runSearch() {
     return;
   }
 
+  $('#results').innerHTML = results
+    .map(
+      (g) => `<li class="book">${cover(g)}<div class="info">
+          ${titleLink(g)}
+          ${g.author ? `<div class="author">${esc(g.author)}</div>` : ''}
+          <div class="owners">${ownersHtml(g)}</div></div></li>`,
+    )
+    .join('');
+  $$('#results .want').forEach((btn) => btn.addEventListener('click', () => requestBook(btn)));
+}
+
+/** Who has a copy, with a Request button for each available copy that isn't yours. */
+function ownersHtml(g) {
   const myOpen = new Map(
     state.requests.filter((r) => r.role === 'borrower' && ['pending', 'accepted'].includes(r.status)).map((r) => [r.book.id, r]),
   );
-  $('#results').innerHTML = results
-    .map((g) => {
-      const owners = g.copies
-        .map((c) => {
-          const mine = c.owner.id === state.me.id;
-          const open = myOpen.get(c.bookId);
-          const status = c.status === 'lent' ? '<span class="tag lent">lent out</span>' : '<span class="tag ok">available</span>';
-          let action = '';
-          if (!mine && open) action = `<span class="tag">${open.status === 'pending' ? 'requested' : 'borrowing'}</span>`;
-          else if (!mine && c.status !== 'lent') {
-            action = `<button class="btn small want" data-book="${c.bookId}" data-title="${esc(g.title)}" data-owner="${esc(c.owner.name)}">Request</button>`;
-          }
-          const who = mine ? 'You' : `${esc(c.owner.name)}${c.owner.place ? ` <span class="place">· ${esc(c.owner.place)}</span>` : ''}`;
-          return `<div class="owner"><span>${who}</span>${status}${action}</div>`;
-        })
-        .join('');
-      return `<li class="book">${cover(g)}<div class="info">
-          <div class="title">${esc(g.title)}</div>
-          ${g.author ? `<div class="author">${esc(g.author)}</div>` : ''}
-          <div class="owners">${owners}</div></div></li>`;
+  return g.copies
+    .map((c) => {
+      const mine = c.owner.id === state.me.id;
+      const open = myOpen.get(c.bookId);
+      const status = c.status === 'lent' ? '<span class="tag lent">lent out</span>' : '<span class="tag ok">available</span>';
+      let action = '';
+      if (!mine && open) action = `<span class="tag">${open.status === 'pending' ? 'requested' : 'borrowing'}</span>`;
+      else if (!mine && c.status !== 'lent') {
+        action = `<button class="btn small want" data-book="${c.bookId}" data-title="${esc(g.title)}" data-owner="${esc(c.owner.name)}">Request</button>`;
+      }
+      const who = mine ? 'You' : `${esc(c.owner.name)}${c.owner.place ? ` <span class="place">· ${esc(c.owner.place)}</span>` : ''}`;
+      return `<div class="owner"><span>${who}</span>${status}${action}</div>`;
     })
     .join('');
+}
 
-  $$('#results .want').forEach((btn) =>
-    btn.addEventListener('click', async () => {
-      const note = await sheet({
-        title: `Borrow “${btn.dataset.title}”?`,
-        text: `${btn.dataset.owner} will get your request on WhatsApp. Your number is not shared.`,
-        input: { placeholder: 'Add a note (optional), e.g. “Could I pick it up Sunday?”' },
-        ok: 'Send request',
-      });
-      if (note === null) return;
-      try {
-        await api('/api/requests', { method: 'POST', body: { bookId: Number(btn.dataset.book), note } });
-        toast(`Request sent to ${btn.dataset.owner}.`);
-        await refreshRequests();
-        runSearch();
-      } catch (ex) {
-        toast(ex.message);
-      }
-    }),
-  );
+async function requestBook(btn) {
+  const note = await sheet({
+    title: `Borrow “${btn.dataset.title}”?`,
+    text: `${btn.dataset.owner} will get your request on WhatsApp. Your number is not shared.`,
+    input: { placeholder: 'Add a note (optional), e.g. “Could I pick it up Sunday?”' },
+    ok: 'Send request',
+  });
+  if (note === null) return;
+  try {
+    await api('/api/requests', { method: 'POST', body: { bookId: Number(btn.dataset.book), note } });
+    toast(`Request sent to ${btn.dataset.owner}.`);
+    $('#book-card').close();
+    await refreshRequests();
+    runSearch();
+  } catch (ex) {
+    toast(ex.message);
+  }
+}
+
+// ---------- book card: tap a title for its introduction ----------
+
+const cards = new Map(); // "title|author" -> the book as last shown in a list
+
+function titleLink(b) {
+  const key = `${b.title}|${b.author || ''}`.toLowerCase();
+  cards.set(key, b);
+  return `<button type="button" class="title title-link" data-card="${esc(key)}">${esc(b.title)}</button>`;
+}
+
+document.addEventListener('click', (e) => {
+  const link = e.target.closest('.title-link');
+  if (link) openBookCard(cards.get(link.dataset.card), link.dataset.card);
+});
+$('#book-card').addEventListener('click', (e) => {
+  if (e.target === e.currentTarget) e.currentTarget.close(); // a tap outside the card
+});
+
+async function openBookCard(book, key) {
+  if (!book) return;
+  const dlg = $('#book-card');
+  dlg.dataset.key = key;
+  renderBookCard(book, undefined);
+  if (!dlg.open) dlg.showModal();
+  const qs = new URLSearchParams({ title: book.title, author: book.author || '' });
+  if (book.isbn) qs.set('isbn', book.isbn);
+  let info = null;
+  try {
+    ({ info } = await api(`/api/book-info?${qs}`));
+  } catch {
+    // shown as "no introduction"
+  }
+  if (dlg.open && dlg.dataset.key === key) renderBookCard(book, info);
+}
+
+/** `info`: undefined while loading, null if nothing was found. */
+function renderBookCard(book, info) {
+  const meta = info
+    ? [info.published, info.pages && `${info.pages} pages`, ...(info.genres || [])].filter(Boolean)
+    : [];
+  const paras = (info?.description || '').split(/\n+/).filter(Boolean);
+  const intro =
+    info === undefined
+      ? '<p class="muted">Looking up an introduction…</p>'
+      : paras.length
+        ? `<div class="bc-text clamped">${paras.map((p) => `<p>${esc(p)}</p>`).join('')}</div>
+           <button type="button" class="btn small bc-more" hidden>Read more</button>`
+        : '<p class="muted">No introduction found for this book.</p>';
+  $('#book-card').innerHTML = `<div class="bc">
+      <button type="button" class="icon-btn bc-close" aria-label="Close">
+        <svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18"/></svg></button>
+      <div class="bc-head">${cover(book)}<div>
+        <h2>${esc(book.title)}</h2>
+        ${book.author ? `<div class="author">${esc(book.author)}</div>` : ''}
+        ${meta.length ? `<div class="bc-meta">${meta.map((m) => `<span>${esc(m)}</span>`).join('')}</div>` : ''}
+      </div></div>
+      <div class="bc-intro">${intro}</div>
+      ${book.copies ? `<div><h3>On neighbours’ shelves</h3><div class="owners">${ownersHtml(book)}</div></div>` : ''}
+      ${info?.description ? `<p class="muted small">Introduction from ${esc(info.source)}${info.publisher ? ` · ${esc(info.publisher)}` : ''}</p>` : ''}
+    </div>`;
+  const dlg = $('#book-card');
+  dlg.querySelector('.bc-close').addEventListener('click', () => dlg.close());
+  dlg.querySelectorAll('.want').forEach((btn) => btn.addEventListener('click', () => requestBook(btn)));
+  const text = dlg.querySelector('.bc-text');
+  const more = dlg.querySelector('.bc-more');
+  if (text && more) {
+    requestAnimationFrame(() => (more.hidden = text.scrollHeight <= text.clientHeight + 4));
+    more.addEventListener('click', () => {
+      text.classList.remove('clamped');
+      more.remove();
+    });
+  }
 }
 
 // ---------- requests & private chat ----------
@@ -409,7 +487,7 @@ function requestCard(r) {
   }
   const due = r.status === 'accepted' && r.dueAt ? ` · due ${fmtDate(r.dueAt)}` : '';
   return `<li class="book" data-request="${r.id}">${cover(r.book)}<div class="info">
-      <div class="title">${esc(r.book.title)}</div>
+      ${titleLink(r.book)}
       <div class="author">${who} · <span class="tag ${r.status === 'accepted' ? 'lent' : ''}">${STATUS_TEXT[r.status]}</span>${due}</div>
       ${r.note && r.status === 'pending' ? `<div class="note">“${esc(r.note)}”</div>` : ''}
       ${buttons.length ? `<div class="actions">${buttons.join('')}</div>` : ''}
@@ -461,7 +539,7 @@ async function openThread(id) {
   }
   const r = data.request;
   $('#thread-head').innerHTML = `<div class="book small">${cover(r.book)}<div class="info">
-      <div class="title">${esc(r.book.title)}</div>
+      ${titleLink(r.book)}
       <div class="author">${r.role === 'owner' ? 'Lending to' : 'Borrowing from'} ${esc(r.other.name)}${r.other.place ? ` (${esc(r.other.place)})` : ''}${r.dueAt ? ` · due ${fmtDate(r.dueAt)}` : ''}</div></div></div>
     ${r.otherPhone ? `<div class="shared">📞 ${esc(r.other.name)} shared their number: <a target="_blank" rel="noopener" href="${esc(waLink(r.otherPhone))}">+${esc(r.otherPhone)}</a></div>` : ''}`;
 
@@ -762,7 +840,7 @@ async function loadMe() {
     ? books
         .map(
           (b) => `<li class="book">${cover(b)}<div class="info">
-            <div class="title">${esc(b.title)}</div>
+            ${titleLink({ ...b, cover: b.cover_url })}
             ${b.author ? `<div class="author">${esc(b.author)}</div>` : ''}
             <div class="actions">
               <button class="btn small ${b.status === 'lent' ? 'warn' : ''}" data-toggle="${b.id}" data-status="${b.status}">

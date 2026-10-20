@@ -7,6 +7,7 @@ import { baseSettings, fakeTransport, AYESHA, BILAL } from './helpers.js';
 let server;
 let base;
 let store;
+let bookInfoCalls = 0;
 const transport = fakeTransport();
 
 before(async () => {
@@ -20,6 +21,7 @@ before(async () => {
       identifyBooks: async () => ({ books: [{ title: 'Ikigai', author: '', isbn: null }], costUsd: 0.001 }),
       lookupIsbn: async () => ({ title: 'The Alchemist', author: 'Paulo Coelho', isbn: '9780062315007', cover: null }),
       searchBooks: async () => [],
+      bookDetails: async () => (bookInfoCalls++, { description: 'A boy, a dream.', published: '1988', pages: 208, genres: [], source: 'Google Books' }),
     },
   });
   await new Promise((r) => (server = app.listen(0, r)));
@@ -117,4 +119,14 @@ test('a building or locality is required before adding or requesting books', asy
   const ok = await call('/api/me', { method: 'PATCH', token: t, body: { building: '', locality: 'Saket' } });
   assert.equal(ok.data.member.place, 'Saket');
   assert.equal((await call('/api/books', { method: 'POST', token: t, body: { books: [{ title: 'Ikigai' }] } })).status, 200);
+});
+
+test('book card details are looked up once, then cached', async () => {
+  const t = await signIn('919833333333', 'Dev');
+  const url = '/api/book-info?title=The%20Alchemist&author=Paulo%20Coelho';
+  assert.equal((await call(url, { token: t })).data.info.description, 'A boy, a dream.');
+  await call(url.replace('The%20Alchemist', 'the%20alchemist'), { token: t }); // same book
+  assert.equal(bookInfoCalls, 1);
+  assert.equal((await call('/api/book-info', { token: t })).status, 400);
+  assert.equal((await call(url)).status, 401); // members only
 });

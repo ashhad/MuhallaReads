@@ -1,6 +1,6 @@
 import { test, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
-import { lookupIsbn, searchBooks, enrich } from '../src/lookup.js';
+import { lookupIsbn, searchBooks, enrich, bookDetails } from '../src/lookup.js';
 
 const realFetch = globalThis.fetch;
 afterEach(() => (globalThis.fetch = realFetch));
@@ -49,4 +49,44 @@ test('enrich only accepts a matching title', async () => {
   const r = await enrich({ title: 'dune', author: '' });
   assert.equal(r.author, 'Frank Herbert');
   assert.equal(r.title, 'dune');
+});
+
+test('book card details come from Google Books, as plain text, for the same title only', async () => {
+  mockFetch({
+    'googleapis.com': {
+      items: [
+        { volumeInfo: { title: 'Dune Messiah', description: 'The sequel.' } },
+        {
+          volumeInfo: {
+            title: 'Dune', publishedDate: '1965-08-01', pageCount: 412, publisher: 'Chilton',
+            categories: ['Fiction / Science Fiction / General'],
+            description: '<p>Set on the desert planet <b>Arrakis</b>, Dune is&nbsp;the story of Paul Atreides.</p><p>A classic.</p>',
+          },
+        },
+      ],
+    },
+  });
+  assert.deepEqual(await bookDetails({ title: 'Dune', author: 'Frank Herbert' }), {
+    description: 'Set on the desert planet Arrakis, Dune is the story of Paul Atreides.\nA classic.',
+    published: '1965', pages: 412, publisher: 'Chilton', genres: ['Science Fiction'], source: 'Google Books',
+  });
+});
+
+test('book card falls back to Open Library for the introduction', async () => {
+  mockFetch({
+    'googleapis.com': { items: [{ volumeInfo: { title: 'Gitanjali', pageCount: 120 } }] }, // no description
+    'search.json': { docs: [{ key: '/works/OL1W', title: 'Gitanjali', first_publish_year: 1910, subject: ['Poetry'] }] },
+    'openlibrary.org/works/OL1W.json': { description: { value: 'Song offerings.' } },
+  });
+  const d = await bookDetails({ title: 'Gitanjali', author: 'Rabindranath Tagore' });
+  assert.equal(d.description, 'Song offerings.');
+  assert.equal(d.pages, 120);
+  assert.equal(d.source, 'Open Library');
+});
+
+test('book card never shows a different book with a similar title', async () => {
+  mockFetch({ 'googleapis.com': { items: [{ volumeInfo: { title: 'Dune Messiah', description: 'The sequel.' } }] } });
+  assert.equal(await bookDetails({ title: 'Dune' }), null);
+  mockFetch({ 'googleapis.com': { items: [{ volumeInfo: { title: 'Dune: Deluxe Edition', description: 'Arrakis.' } }] } });
+  assert.equal((await bookDetails({ title: 'Dune' })).description, 'Arrakis.');
 });

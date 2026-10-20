@@ -141,3 +141,75 @@ export async function enrichAll(books, concurrency = 4) {
   await Promise.all(Array.from({ length: Math.min(concurrency, books.length) }, worker));
   return out;
 }
+
+// ---------- details for the book card (introduction, year, pages, genre) ----------
+
+const ENTITIES = { '&amp;': '&', '&quot;': '"', '&#39;': "'", '&lt;': '<', '&gt;': '>', '&nbsp;': ' ' };
+
+/** Plain text from Google's HTML-ish descriptions, trimmed to a readable length. */
+function plainText(s, max = 1400) {
+  const text = String(s || '')
+    .replace(/<br\s*\/?>|<\/p>/gi, '\n')
+    .replace(/<[^>]+>/g, '')
+    .replace(/&(amp|quot|#39|lt|gt|nbsp);/g, (m) => ENTITIES[m])
+    .replace(/\r/g, '')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+  if (text.length <= max) return text;
+  const cut = text.slice(0, max);
+  return cut.slice(0, Math.max(cut.lastIndexOf('. ') + 1, cut.lastIndexOf(' '))).trim() + '…';
+}
+
+/** "Fiction / Science Fiction / General" → "Science Fiction". */
+const genre = (c) => String(c).split(' / ').filter((p) => p !== 'General').pop();
+
+/**
+ * Details for the book card: { description, published, pages, publisher, genres, source } or null.
+ * Google Books first (it has introductions for most books), then Open Library. Only accepts a result
+ * for the same title (or the same ISBN), so a card never shows another book's introduction.
+ */
+export async function bookDetails({ isbn: rawIsbn, title, author }) {
+  const isbn = normalizeIsbn(rawIsbn);
+  const want = normText(title);
+  // The same title, or the same title plus a subtitle ("Dune: Deluxe Edition"), but never "Dune Messiah".
+  const sameTitle = (t) => !want || normText(t) === want || normText(String(t).split(/\s*[:(–—]\s*|\s+-\s+/)[0]) === want;
+  let info = null;
+
+  const queries = [];
+  if (isbn) queries.push(`isbn:${isbn}`);
+  if (title) queries.push(`intitle:${title}${author ? ` inauthor:${author.split(',')[0]}` : ''}`);
+  for (const q of queries) {
+    const items = ((await getJson(googleUrl(q)))?.items || []).map((i) => i.volumeInfo).filter(Boolean);
+    const matches = items.filter((v) => v.title && (q.startsWith('isbn:') || sameTitle(v.title)));
+    const v = matches.find((m) => m.description) || matches[0];
+    if (!v) continue;
+    info = {
+      description: plainText(v.description),
+      published: String(v.publishedDate || '').slice(0, 4),
+      pages: v.pageCount || null,
+      publisher: v.publisher || '',
+      genres: [...new Set((v.categories || []).map(genre))].slice(0, 2),
+      source: 'Google Books',
+    };
+    if (info.description) return info;
+  }
+
+  if (!title) return info;
+  const ol = await getJson(
+    `https://openlibrary.org/search.json?title=${encodeURIComponent(title)}` +
+      `${author ? `&author=${encodeURIComponent(author.split(',')[0])}` : ''}&limit=3` +
+      '&fields=key,title,first_publish_year,number_of_pages_median,subject,publisher',
+  );
+  const doc = (ol?.docs || []).find((d) => sameTitle(d.title));
+  if (!doc) return info;
+  const work = doc.key ? await getJson(`https://openlibrary.org${doc.key}.json`) : null;
+  const description = plainText(typeof work?.description === 'string' ? work.description : work?.description?.value);
+  return {
+    description: description || info?.description || '',
+    published: info?.published || (doc.first_publish_year ? String(doc.first_publish_year) : ''),
+    pages: info?.pages || doc.number_of_pages_median || null,
+    publisher: info?.publisher || doc.publisher?.[0] || '',
+    genres: info?.genres?.length ? info.genres : (doc.subject || []).filter((s) => s.length <= 24).slice(0, 2),
+    source: description ? 'Open Library' : info?.source || 'Open Library',
+  };
+}

@@ -110,6 +110,13 @@ CREATE TABLE IF NOT EXISTS photo_scans (
 );
 CREATE INDEX IF NOT EXISTS photo_scans_member ON photo_scans(member_id, created_at);
 
+-- Cached book-card details from Google Books / Open Library, so each book is looked up once.
+CREATE TABLE IF NOT EXISTS book_info (
+  key        TEXT PRIMARY KEY,
+  data       TEXT,            -- JSON, or NULL when nothing was found
+  fetched_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS meta (
   key   TEXT PRIMARY KEY,
   value TEXT
@@ -497,6 +504,19 @@ export class Store {
       `SELECT COUNT(*) AS photos, COALESCE(SUM(cost), 0) AS cost FROM photo_scans
        WHERE created_at >= ? AND (? IS NULL OR member_id = ?)`,
     ).get(since, memberId ?? null, memberId ?? null);
+  }
+
+  /** A cached book card: undefined if never looked up (or too old), otherwise the details or null. */
+  cachedBookInfo(key, maxAgeMs) {
+    const row = this.q('SELECT data, fetched_at FROM book_info WHERE key = ?').get(key);
+    if (!row || Date.now() - Date.parse(row.fetched_at) > maxAgeMs(row.data)) return undefined;
+    return row.data ? JSON.parse(row.data) : null;
+  }
+
+  cacheBookInfo(key, info) {
+    this.q(
+      'INSERT INTO book_info (key, data, fetched_at) VALUES (?, ?, ?) ON CONFLICT(key) DO UPDATE SET data = excluded.data, fetched_at = excluded.fetched_at',
+    ).run(key, info ? JSON.stringify(info) : null, now());
   }
 
   getMeta(key) {

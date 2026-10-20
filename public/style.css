@@ -238,6 +238,39 @@ dialog::backdrop { background: rgb(13 27 38 / .55); }
 #profile-form label { display: grid; gap: .3rem; font-weight: 600; font-size: .9rem; }
 .place { color: var(--muted); font-size: .8rem; font-weight: 400; }
 
+/* book titles open the book card */
+.title-link {
+  display: block; background: none; border: 0; padding: 0; margin: 0; font: inherit; font-weight: 600;
+  color: inherit; text-align: left; cursor: pointer; text-decoration: underline; text-decoration-color: transparent;
+  text-underline-offset: 3px; transition: text-decoration-color .15s ease;
+}
+.title-link:hover, .title-link:focus-visible { text-decoration-color: var(--brand); }
+
+/* book card: a frosted, see-through sheet that rises from the bottom (centred on wide screens) */
+#book-card {
+  width: min(560px, 100%); max-width: 100%; max-height: 88vh; margin: auto auto 0; padding: 0; overflow: auto;
+  border: 1px solid color-mix(in srgb, var(--line) 60%, transparent); border-bottom: 0; border-radius: 26px 26px 0 0;
+  background: color-mix(in srgb, var(--card) 68%, transparent); color: var(--text);
+  -webkit-backdrop-filter: blur(22px) saturate(1.6); backdrop-filter: blur(22px) saturate(1.6);
+  box-shadow: 0 -12px 48px rgb(13 27 38 / .22);
+}
+#book-card::backdrop { background: rgb(13 27 38 / .18); }
+#book-card[open] { animation: card-rise .28s cubic-bezier(.2, .8, .2, 1); }
+@keyframes card-rise { from { transform: translateY(40px); opacity: 0; } }
+@media (min-width: 640px) { #book-card { margin: auto; border-bottom: 1px solid color-mix(in srgb, var(--line) 60%, transparent); border-radius: 26px; } }
+.bc { position: relative; display: grid; gap: 1.1rem; padding: 1.3rem 1.2rem calc(1.4rem + env(safe-area-inset-bottom)); }
+.bc::before { content: ""; justify-self: center; width: 40px; height: 4px; margin: -.5rem 0 -.3rem; border-radius: 999px; background: var(--line); }
+.bc-close { position: absolute; top: .6rem; right: .6rem; }
+.bc-head { display: flex; gap: 1rem; align-items: flex-start; padding-right: 2rem; }
+.bc-head .cover { width: 86px; height: 128px; font-size: 1.6rem; border-radius: 8px; box-shadow: 0 8px 22px rgb(13 27 38 / .25); }
+.bc h2 { margin: 0 0 .2rem; font-size: 1.55rem; }
+.bc h3 { margin-top: 0; }
+.bc-meta { display: flex; flex-wrap: wrap; gap: .35rem; margin-top: .55rem; }
+.bc-meta span { font-size: .75rem; font-weight: 600; padding: .15rem .6rem; border-radius: 999px; background: color-mix(in srgb, var(--text) 8%, transparent); }
+.bc-intro p { margin: 0 0 .65rem; line-height: 1.6; }
+.bc-text.clamped { display: -webkit-box; -webkit-line-clamp: 7; -webkit-box-orient: vertical; overflow: hidden; }
+.bc-more { justify-self: start; }
+
 /* a request opened from a WhatsApp notification */
 .book.flash { animation: flash 2.4s ease-out; }
 @keyframes flash { 0%, 40% { box-shadow: 0 0 0 3px var(--brand); } 100% { box-shadow: 0 0 0 0 transparent; } }
