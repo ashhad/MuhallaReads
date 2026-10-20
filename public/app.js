@@ -20,10 +20,21 @@ const state = {
   config: {},
   requests: [],
   thread: null, // id of the open conversation
-  tray: [], // books waiting to be added: { title, author, isbn, cover, checked }
+  tray: savedTray(), // books waiting to be added: { title, author, isbn, cover, checked }
   scanner: null,
   scanned: new Set(),
 };
+for (const b of state.tray) if (b.isbn) state.scanned.add(b.isbn);
+
+/** The "Ready to add" list is kept on this phone, so leaving the page doesn't lose a scanned shelf. */
+function savedTray() {
+  try {
+    const tray = JSON.parse(store.get('tray') || '[]');
+    return Array.isArray(tray) ? tray.filter((b) => b && typeof b === 'object') : [];
+  } catch {
+    return [];
+  }
+}
 
 // ---------- helpers ----------
 
@@ -161,6 +172,7 @@ function showApp() {
   $('#signin').hidden = true;
   $('#app').hidden = false;
   renderMe();
+  renderTray(); // books scanned earlier but not added yet
   refreshRequests();
   if (!state.me.place) {
     showView('find');
@@ -246,8 +258,16 @@ $('#profile-form').addEventListener('submit', async (e) => {
   }
 });
 
+/** On purposeful sign-out, don't leave this person's unsaved books on the phone for the next person. */
+function forgetTray() {
+  state.tray = [];
+  state.scanned.clear();
+  store.set('tray', null);
+}
+
 $('#logout').addEventListener('click', async () => {
   await api('/api/logout', { method: 'POST' }).catch(() => {});
+  forgetTray();
   signedOut();
 });
 
@@ -259,6 +279,7 @@ $('#delete-account').addEventListener('click', async () => {
   });
   if (ok === null) return;
   await api('/api/me', { method: 'DELETE' }).catch((ex) => toast(ex.message));
+  forgetTray();
   signedOut();
 });
 
@@ -616,7 +637,7 @@ $('#photo-input').addEventListener('change', async (e) => {
     const image = await shrinkImage(file, 2000);
     const { results } = await api('/api/scan-photo', { method: 'POST', body: { image } });
     status.textContent = results.length
-      ? `Found ${results.length} book${results.length > 1 ? 's' : ''}. Untick any that are wrong, then add.`
+      ? `Found ${results.length} book${results.length > 1 ? 's' : ''}. Untick any that are wrong, then tap “Add” at the bottom to save them.`
       : 'No readable titles found. Try a closer, well-lit photo.';
     addToTray(results);
   } catch (ex) {
@@ -697,6 +718,10 @@ function updateAddButton() {
   const n = state.tray.filter((b) => b.checked && b.title).length;
   $('#add-all').textContent = `Add ${n} book${n === 1 ? '' : 's'}`;
   $('#add-all').disabled = !n;
+  // Show on the Add tab that books are still waiting, so nobody thinks the ticks mean "added".
+  $('#add-badge').hidden = !n;
+  $('#add-badge').textContent = n;
+  store.set('tray', state.tray.length ? JSON.stringify(state.tray.filter((b) => !b.loading)) : null);
 }
 
 $('#add-all').addEventListener('click', async () => {
