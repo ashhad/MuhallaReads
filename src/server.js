@@ -199,7 +199,15 @@ export function createApp({ store, deps = {}, settings = config } = {}) {
       if (err instanceof VisionError) throw new HttpError(422, err.message);
       throw err;
     }
-    res.json({ results: await enrichAll(found.books) });
+    // Unticked for review: titles the model wasn't sure it read, and ones no book database knows
+    // (a misread like "Temple of Gods" for "Against the Gods", or something that isn't a book).
+    const books = await enrichAll(found.books);
+    res.json({
+      results: books.map(({ title, author, isbn, cover, sure = true, matched = true }) => {
+        const unsure = !sure || !matched;
+        return { title, author, isbn: isbn || null, cover: cover || null, checked: !unsure, unsure };
+      }),
+    });
   });
 
   api.patch('/books/:id', async (req, res) => {

@@ -44,7 +44,7 @@ test('search maps Open Library docs', async () => {
 
 test('enrich only accepts a matching title', async () => {
   mockFetch({ 'search.json': { docs: [{ title: 'Dune Messiah', author_name: ['Frank Herbert'], cover_i: 2 }] } });
-  assert.deepEqual(await enrich({ title: 'Dune', author: '' }), { title: 'Dune', author: '' });
+  assert.deepEqual(await enrich({ title: 'Dune', author: '' }), { title: 'Dune', author: '', matched: false });
   mockFetch({ 'search.json': { docs: [{ title: 'Dune', author_name: ['Frank Herbert'], cover_i: 2 }] } });
   const r = await enrich({ title: 'dune', author: '' });
   assert.equal(r.author, 'Frank Herbert');
@@ -123,4 +123,27 @@ test('book card lookups that fail are reported, so they are not cached as "not f
   } finally {
     console.warn = warn;
   }
+});
+
+test('a title shared by different books gets no guessed author', async () => {
+  mockFetch({
+    'search.json': {
+      docs: [
+        { title: 'The Choice', author_name: ['Nicholas Sparks'], cover_i: 3 },
+        { title: 'The Choice', author_name: ['Edith Eva Eger'], cover_i: 4 },
+      ],
+    },
+  });
+  const r = await enrich({ title: 'The Choice', author: '' });
+  assert.equal(r.author, '');
+  assert.equal(r.matched, true);
+  assert.equal(r.cover, undefined);
+  // With the printed author, the right book is used.
+  const eger = await enrich({ title: 'The Choice', author: 'Edith Eger' });
+  assert.equal(eger.cover, 'https://covers.openlibrary.org/b/id/4-M.jpg');
+});
+
+test('a title no book database knows is marked unmatched', async () => {
+  mockFetch({ 'search.json': { docs: [{ title: 'Temple of the Gods', author_name: ['Someone'] }] } });
+  assert.equal((await enrich({ title: 'Why Things Aren’t', author: '' })).matched, false);
 });

@@ -5,6 +5,10 @@ import { normText } from './db.js';
 
 const TIMEOUT_MS = 8000;
 
+const SUBTITLE = /\s*[:(–—]\s*|\s+-\s+/;
+/** "When I Sing, Mountains Dance: A Novel" → "when i sing mountains dance". */
+const mainTitle = (t) => normText(String(t || '').split(SUBTITLE)[0]);
+
 async function getJson(url) {
   const host = new URL(url).host;
   try {
@@ -95,36 +99,45 @@ export async function searchBooks(query, limit = 6) {
 /**
  * Fills in missing details (author, cover, canonical title) for a book someone typed or a photo
  * showed. Only accepts a match whose title clearly corresponds, so we never swap in a different book.
+ * `matched` says whether the book was found in a book database at all (a misread title usually isn't).
  */
 export async function enrich(book) {
   if (book.isbn) {
     const hit = await lookupIsbn(book.isbn);
     if (hit) {
       return {
+        ...book,
         title: book.title || hit.title,
         author: book.author || hit.author,
         isbn: hit.isbn,
         cover: book.cover || hit.cover,
+        matched: true,
       };
     }
   }
-  if (!book.title) return book;
+  if (!book.title) return { ...book, matched: false };
 
   const q = book.author ? `${book.title} ${book.author}` : book.title;
   const candidates = await searchBooks(q, 5);
   const want = normText(book.title);
   const wantAuthor = normText(book.author);
-  const hit = candidates.find((c) => {
-    const titleOk = normText(c.title) === want; // exact, so "Dune" never becomes "Dune Messiah"
-    const authorOk = !wantAuthor || normText(c.author).split(' ').some((w) => w.length > 2 && wantAuthor.includes(w));
-    return titleOk && authorOk;
-  });
-  if (!hit) return book;
+  // Exact title, or the same main title around a subtitle; never "Dune Messiah" for "Dune".
+  const sameTitle = (c) => normText(c.title) === want || mainTitle(c.title) === mainTitle(book.title);
+  const authorOk = (c) => !wantAuthor || normText(c.author).split(' ').some((w) => w.length > 2 && wantAuthor.includes(w));
+  const exact = candidates.filter(sameTitle);
+  const hit = exact.find(authorOk);
+  if (!hit) return { ...book, matched: false };
+  // With no author to go on, different books can share a title ("The Choice" by Edith Eger and by
+  // Nicholas Sparks). Then fill in nothing rather than pick one.
+  if (!wantAuthor && new Set(exact.map((c) => normText(c.author)).filter(Boolean)).size > 1) {
+    return { ...book, matched: true };
+  }
   return {
-    title: book.title,
+    ...book,
     author: book.author || hit.author,
     isbn: book.isbn || hit.isbn,
     cover: book.cover || hit.cover,
+    matched: true,
   };
 }
 
@@ -159,10 +172,6 @@ function plainText(s, max = 1400) {
   const cut = text.slice(0, max);
   return cut.slice(0, Math.max(cut.lastIndexOf('. ') + 1, cut.lastIndexOf(' '))).trim() + '…';
 }
-
-const SUBTITLE = /\s*[:(–—]\s*|\s+-\s+/;
-/** "When I Sing, Mountains Dance: A Novel" → "when i sing mountains dance". */
-const mainTitle = (t) => normText(String(t || '').split(SUBTITLE)[0]);
 
 /** "Fiction / Science Fiction / General" → "Science Fiction". */
 const genre = (c) => String(c).split(' / ').filter((p) => p !== 'General').pop();

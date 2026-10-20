@@ -179,6 +179,7 @@ input[type=checkbox] { width: 1.2rem; height: 1.2rem; padding: 0; flex: none; ac
 #reader { width: 100%; border-radius: var(--radius); overflow: hidden; background: #000; min-height: 200px; }
 .file-btn { cursor: pointer; }
 .fix-title { padding: .4rem .6rem; font-size: .9rem; }
+.warn-text { color: var(--warn); }
 .notice { background: var(--mint-soft); color: var(--text); padding: .85rem 1rem; border-radius: var(--radius); }
 
 /* me */

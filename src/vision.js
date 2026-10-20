@@ -9,13 +9,21 @@ const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
 const PROMPT = `This photo was taken by someone adding their own books to a community library catalogue.
 It may show a single book cover, a pile of books, a shelf of spines, or ISBN barcodes.
 
-List every distinct book you can identify. For each one give:
-- title: the book's title as printed (fix obvious capitalisation; include the subtitle only if clearly visible)
-- author: the author if it is printed or you are confident who wrote it, otherwise ""
-- isbn: the ISBN digits if an ISBN is printed and fully legible, otherwise ""
+List every distinct book you can see. For each one give:
+- title: the title exactly as printed on that book's spine or cover. Fix capitalisation only. Do not
+  complete, correct or "recognise" a title from memory: if the letters say AGAINST THE GODS, the title
+  is "Against the Gods", even if another book's title looks similar. Include a subtitle only if it is
+  clearly printed.
+- author: the author's name only if it is printed on that same book. Never fill in an author from
+  memory, even for a famous title: several different books share titles like "The Choice". If no name
+  is printed, use "".
+- isbn: the ISBN digits only if an ISBN is printed and fully legible, otherwise "".
+- sure: true only if you can read every word of the title clearly; false if any of it is blurred,
+  cut off, at an angle you can't read well, or partly guessed.
 
-Only include books whose title you can actually read. Do not guess unreadable spines, and do not
-list the same book twice. If no books are visible, return an empty list.`;
+Only list books. Skip anything else on the shelf: magazines, notebooks, diaries, files and folders,
+boxes, DVDs, games, labels, stickers, signs and decorations, and any text that isn't a book's title.
+Do not list the same book twice. If no books are visible, return an empty list.`;
 
 const SCHEMA = {
   type: 'object',
@@ -28,8 +36,9 @@ const SCHEMA = {
           title: { type: 'string' },
           author: { type: 'string' },
           isbn: { type: 'string' },
+          sure: { type: 'boolean' },
         },
-        required: ['title', 'author', 'isbn'],
+        required: ['title', 'author', 'isbn', 'sure'],
         additionalProperties: false,
       },
     },
@@ -67,7 +76,8 @@ export function photoRequest(model, mediaType, base64) {
   const params = {
     model,
     max_tokens: 16000,
-    output_config: { effort: 'medium', format: { type: 'json_schema', schema: SCHEMA } },
+    // Haiku reads small spine text more carefully at high effort, for well under ₹0.10 more per photo.
+    output_config: { effort: model.startsWith('claude-haiku') ? 'high' : 'medium', format: { type: 'json_schema', schema: SCHEMA } },
     messages: [
       {
         role: 'user',
@@ -121,7 +131,7 @@ export async function identifyBooks(buffer, mediaType) {
   }
   const books = (parsed.books || [])
     .filter((b) => b.title?.trim())
-    .map((b) => ({ title: b.title.trim(), author: (b.author || '').trim(), isbn: normalizeIsbn(b.isbn) }));
+    .map((b) => ({ title: b.title.trim(), author: (b.author || '').trim(), isbn: normalizeIsbn(b.isbn), sure: b.sure !== false }));
   return { books, costUsd: cost };
 }
 

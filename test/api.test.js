@@ -130,3 +130,40 @@ test('book card details are looked up once, then cached', async () => {
   assert.equal((await call('/api/book-info', { token: t })).status, 400);
   assert.equal((await call(url)).status, 401); // members only
 });
+
+test('photo results that were hard to read, or not found anywhere, come back unticked', async () => {
+  const { createApp } = await import('../src/server.js');
+  const s = openDb(':memory:');
+  const app = createApp({
+    store: s,
+    settings: { ...baseSettings, whatsapp: {} },
+    deps: {
+      transport: null,
+      identifyBooks: async () => ({
+        costUsd: 0,
+        books: [
+          { title: 'Against the Gods', author: '', isbn: null, sure: true },
+          { title: 'Temple of Gods', author: '', isbn: null, sure: false },
+          { title: 'Why Things Aren’t', author: '', isbn: null, sure: true },
+        ],
+      }),
+      enrichAll: async (books) => books.map((b) => ({ ...b, matched: b.title !== 'Why Things Aren’t' })),
+    },
+  });
+  const srv = await new Promise((r) => { const x = app.listen(0, () => r(x)); });
+  const m = s.createMember({ name: 'Esha', phone: '919811111199' });
+  s.setPlace(m.id, { building: 'B', locality: 'Saket' });
+  const token = s.createSession(m.id);
+  const res = await fetch(`http://127.0.0.1:${srv.address().port}/api/scan-photo`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+    body: JSON.stringify({ image: 'data:image/jpeg;base64,eA==' }),
+  });
+  srv.close();
+  const { results } = await res.json();
+  assert.deepEqual(results.map((b) => [b.title, b.checked]), [
+    ['Against the Gods', true],
+    ['Temple of Gods', false],
+    ['Why Things Aren’t', false],
+  ]);
+});

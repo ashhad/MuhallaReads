@@ -714,8 +714,11 @@ $('#photo-input').addEventListener('change', async (e) => {
   try {
     const image = await shrinkImage(file, 2000);
     const { results } = await api('/api/scan-photo', { method: 'POST', body: { image } });
+    const unsure = results.filter((b) => b.unsure).length;
     status.textContent = results.length
-      ? `Found ${results.length} book${results.length > 1 ? 's' : ''}. Untick any that are wrong, then tap “Add” at the bottom to save them.`
+      ? `Found ${results.length} book${results.length > 1 ? 's' : ''}.` +
+        (unsure ? ` ${unsure} we couldn't read for sure ${unsure > 1 ? 'are' : 'is'} unticked: check ${unsure > 1 ? 'them' : 'it'}.` : '') +
+        ' Untick any that are wrong, then tap “Add” at the bottom to save them.'
       : 'No readable titles found. Try a closer, well-lit photo.';
     addToTray(results);
   } catch (ex) {
@@ -759,6 +762,9 @@ function renderTray() {
         <div class="info">${
           b.loading
             ? `<div class="title muted">Looking up ISBN ${esc(b.isbn)}…</div>`
+            : b.title && b.unsure
+              ? `<input class="fix-title" data-i="${i}" value="${esc(b.author ? `${b.title} by ${b.author}` : b.title)}">
+                 <div class="author warn-text">Not sure we read this right. Fix it, or leave it unticked.</div>`
             : b.title
               ? `<div class="title">${esc(b.title)}</div><div class="author">${esc(b.author)}</div>`
               : `<input class="fix-title" data-i="${i}" placeholder="Book title, e.g. Dune by Frank Herbert">
@@ -778,7 +784,9 @@ function renderTray() {
   $$('#tray-list .fix-title').forEach((inp) => {
     // Save as they type so "Add" is enabled without first leaving the box.
     inp.addEventListener('input', () => {
-      Object.assign(tray[inp.dataset.i], parseTyped(inp.value.trim()));
+      // Correcting a title means "yes, add this one".
+      Object.assign(tray[inp.dataset.i], parseTyped(inp.value.trim()), { checked: true });
+      inp.closest('li').querySelector('input[type=checkbox]').checked = true;
       updateAddButton();
     });
     inp.addEventListener('change', renderTray);
