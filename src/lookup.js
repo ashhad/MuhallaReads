@@ -160,6 +160,10 @@ function plainText(s, max = 1400) {
   return cut.slice(0, Math.max(cut.lastIndexOf('. ') + 1, cut.lastIndexOf(' '))).trim() + '…';
 }
 
+const SUBTITLE = /\s*[:(–—]\s*|\s+-\s+/;
+/** "When I Sing, Mountains Dance: A Novel" → "when i sing mountains dance". */
+const mainTitle = (t) => normText(String(t || '').split(SUBTITLE)[0]);
+
 /** "Fiction / Science Fiction / General" → "Science Fiction". */
 const genre = (c) => String(c).split(' / ').filter((p) => p !== 'General').pop();
 
@@ -171,18 +175,33 @@ const genre = (c) => String(c).split(' / ').filter((p) => p !== 'General').pop()
 export async function bookDetails({ isbn: rawIsbn, title, author }) {
   const isbn = normalizeIsbn(rawIsbn);
   const want = normText(title);
-  // The same title, or the same title plus a subtitle ("Dune: Deluxe Edition"), but never "Dune Messiah".
-  const sameTitle = (t) => !want || normText(t) === want || normText(String(t).split(/\s*[:(–—]\s*|\s+-\s+/)[0]) === want;
+  const wantMain = mainTitle(title);
+  // The same book: the same title, or the same main title with a subtitle on either side ("Dune" and
+  // "Dune: Deluxe Edition"; "When I Sing, Mountains Dance: A Novel" and "When I Sing, Mountains Dance"),
+  // but never "Dune Messiah".
+  const sameTitle = (t, subtitle) =>
+    !want ||
+    [t, subtitle && `${t}: ${subtitle}`].some((c) => c && (normText(c) === want || mainTitle(c) === wantMain));
+  // A source that didn't answer (timeout, daily quota) isn't the same as "no introduction": remember it,
+  // so a miss caused by it isn't cached.
+  let failed = false;
+  const get = async (url) => {
+    const data = await getJson(url);
+    if (data === null) failed = true;
+    return data;
+  };
   let info = null;
 
+  const main = String(title || '').split(SUBTITLE)[0].replace(/"/g, '').trim();
+  const by = String(author || '').split(',')[0].replace(/"/g, '').trim();
   const queries = [];
   if (isbn) queries.push(`isbn:${isbn}`);
-  if (title) queries.push(`intitle:${title}${author ? ` inauthor:${author.split(',')[0]}` : ''}`);
-  // The author may be listed in another script ("Shivani" for "शिवानी"), so also try the exact title alone.
-  if (title && author) queries.push(`intitle:${title}`);
+  if (main) queries.push(`intitle:"${main}"${by ? ` inauthor:"${by}"` : ''}`);
+  // The author may be listed in another script ("Shivani" for "शिवानी"), so also try the title alone.
+  if (main && by) queries.push(`intitle:"${main}"`);
   for (const q of queries) {
-    const items = ((await getJson(googleUrl(q)))?.items || []).map((i) => i.volumeInfo).filter(Boolean);
-    const matches = items.filter((v) => v.title && (q.startsWith('isbn:') || sameTitle(v.title)));
+    const items = ((await get(googleUrl(q)))?.items || []).map((i) => i.volumeInfo).filter(Boolean);
+    const matches = items.filter((v) => v.title && (q.startsWith('isbn:') || sameTitle(v.title, v.subtitle)));
     const v = matches.find((m) => m.description) || matches[0];
     if (!v) continue;
     info = {
@@ -199,15 +218,18 @@ export async function bookDetails({ isbn: rawIsbn, title, author }) {
   if (!title) return info;
   const olSearch = async (byAuthor) =>
     ((
-      await getJson(
-        `https://openlibrary.org/search.json?title=${encodeURIComponent(title)}` +
-          `${byAuthor ? `&author=${encodeURIComponent(author.split(',')[0])}` : ''}&limit=3` +
+      await get(
+        `https://openlibrary.org/search.json?title=${encodeURIComponent(main)}` +
+          `${byAuthor ? `&author=${encodeURIComponent(by)}` : ''}&limit=5` +
           '&fields=key,title,first_publish_year,number_of_pages_median,subject,publisher',
       )
     )?.docs || []).find((d) => sameTitle(d.title));
-  const doc = (author && (await olSearch(true))) || (await olSearch(false));
-  if (!doc) return info;
-  const work = doc.key ? await getJson(`https://openlibrary.org${doc.key}.json`) : null;
+  const doc = (by && (await olSearch(true))) || (await olSearch(false));
+  if (!doc) {
+    if (!info && failed) throw new Error('Book sources did not answer');
+    return info;
+  }
+  const work = doc.key ? await get(`https://openlibrary.org${doc.key}.json`) : null;
   const description = plainText(typeof work?.description === 'string' ? work.description : work?.description?.value);
   return {
     description: description || info?.description || '',

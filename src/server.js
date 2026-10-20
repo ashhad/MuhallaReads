@@ -158,11 +158,17 @@ export function createApp({ store, deps = {}, settings = config } = {}) {
     const title = String(req.query.title || '').trim().slice(0, 300);
     const author = String(req.query.author || '').trim().slice(0, 200);
     if (!isbn && !title) throw new HttpError(400, 'Which book?');
-    const key = isbn || `${normText(title)}|${normText(author)}`;
+    // "v2": results saved before the subtitle and Hindi fixes are ignored and looked up again.
+    const key = `v2:${isbn || `${normText(title)}|${normText(author)}`}`;
     let info = store.cachedBookInfo(key, (data) => (data ? 30 : 3) * DAY);
     if (info === undefined) {
-      info = await bookDetails({ isbn, title, author }).catch(() => null);
-      store.cacheBookInfo(key, info);
+      try {
+        info = await bookDetails({ isbn, title, author });
+        store.cacheBookInfo(key, info);
+      } catch (err) {
+        console.warn(`Book card: ${err.message}; not cached, will try again next time`);
+        info = null;
+      }
     }
     res.json({ info });
   });

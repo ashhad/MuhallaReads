@@ -85,7 +85,10 @@ test('book card falls back to Open Library for the introduction', async () => {
 });
 
 test('book card never shows a different book with a similar title', async () => {
-  mockFetch({ 'googleapis.com': { items: [{ volumeInfo: { title: 'Dune Messiah', description: 'The sequel.' } }] } });
+  mockFetch({
+    'googleapis.com': { items: [{ volumeInfo: { title: 'Dune Messiah', description: 'The sequel.' } }] },
+    'search.json': { docs: [{ title: 'Dune Messiah' }] },
+  });
   assert.equal(await bookDetails({ title: 'Dune' }), null);
   mockFetch({ 'googleapis.com': { items: [{ volumeInfo: { title: 'Dune: Deluxe Edition', description: 'Arrakis.' } }] } });
   assert.equal((await bookDetails({ title: 'Dune' })).description, 'Arrakis.');
@@ -101,4 +104,23 @@ test('book card also tries the title alone, for authors written in another scrip
     return new Response('{}', { status: 404 });
   };
   assert.equal((await bookDetails({ title: 'वातायन', author: 'शिवानी' })).description, 'कहानियों का संग्रह।');
+});
+
+test('book card matches a saved title that includes the subtitle Google lists separately', async () => {
+  mockFetch({
+    'googleapis.com': { items: [{ volumeInfo: { title: 'When I Sing, Mountains Dance', subtitle: 'A Novel', description: 'Set in the Pyrenees.' } }] },
+  });
+  const d = await bookDetails({ title: 'When I Sing, Mountains Dance: A Novel', author: 'Irene Solà' });
+  assert.equal(d.description, 'Set in the Pyrenees.');
+});
+
+test('book card lookups that fail are reported, so they are not cached as "not found"', async () => {
+  globalThis.fetch = async () => new Response('quota', { status: 429 });
+  const warn = console.warn;
+  console.warn = () => {};
+  try {
+    await assert.rejects(bookDetails({ title: 'Dune', author: 'Frank Herbert' }), /did not answer/);
+  } finally {
+    console.warn = warn;
+  }
 });
