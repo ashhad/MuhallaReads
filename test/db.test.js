@@ -22,3 +22,18 @@ test('upgrades a database created before building/locality existed', () => {
   openDb(file); // opening again is a no-op
   fs.rmSync(dir, { recursive: true, force: true });
 });
+
+test('Hindi titles keep their vowel signs when matched and searched', async () => {
+  const { normText, openDb } = await import('../src/db.js');
+  assert.equal(normText('वातायन'), 'वातायन');
+  assert.equal(normText('  मेरी प्रिय कहानियाँ! '), 'मेरी प्रिय कहानियाँ');
+  assert.equal(normText('Café Coffee'), 'cafe coffee'); // Latin accents still ignored
+
+  const store = openDb(':memory:');
+  const m = store.createMember({ name: 'Aditi', phone: '919800000009' });
+  store.addBooks(m.id, [{ title: 'जालक', author: 'शिवानी' }]);
+  const { added } = store.addBooks(m.id, [{ title: 'जलक', author: 'शिवानी' }]); // differs only by a vowel sign
+  assert.equal(added.length, 1);
+  assert.equal(store.search('वातायन').length, 0);
+  assert.equal(store.search('जालक').length, 1);
+});

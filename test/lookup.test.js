@@ -90,3 +90,15 @@ test('book card never shows a different book with a similar title', async () => 
   mockFetch({ 'googleapis.com': { items: [{ volumeInfo: { title: 'Dune: Deluxe Edition', description: 'Arrakis.' } }] } });
   assert.equal((await bookDetails({ title: 'Dune' })).description, 'Arrakis.');
 });
+
+test('book card also tries the title alone, for authors written in another script', async () => {
+  globalThis.fetch = async (url) => {
+    const u = decodeURIComponent(String(url));
+    if (u.includes('googleapis.com') && u.includes('inauthor:')) return new Response(JSON.stringify({ totalItems: 0 }));
+    if (u.includes('googleapis.com')) {
+      return new Response(JSON.stringify({ items: [{ volumeInfo: { title: 'वातायन', authors: ['Shivani'], description: 'कहानियों का संग्रह।' } }] }));
+    }
+    return new Response('{}', { status: 404 });
+  };
+  assert.equal((await bookDetails({ title: 'वातायन', author: 'शिवानी' })).description, 'कहानियों का संग्रह।');
+});

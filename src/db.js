@@ -157,7 +157,9 @@ export const normText = (s) =>
     .toLowerCase()
     .normalize('NFKD')
     .replace(/[̀-ͯ]/g, '')
-    .replace(/[^\p{L}\p{N}]+/gu, ' ')
+    // Keep combining marks (\p{M}): in Hindi and other Indian scripts they're the vowel signs, so
+    // "वातायन" must not become "व त यन". Latin accents were already dropped above (é → e).
+    .replace(/[^\p{L}\p{M}\p{N}]+/gu, ' ')
     .trim();
 
 /** True if every word of `query` appears in the book's title or author. */

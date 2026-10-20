@@ -178,6 +178,8 @@ export async function bookDetails({ isbn: rawIsbn, title, author }) {
   const queries = [];
   if (isbn) queries.push(`isbn:${isbn}`);
   if (title) queries.push(`intitle:${title}${author ? ` inauthor:${author.split(',')[0]}` : ''}`);
+  // The author may be listed in another script ("Shivani" for "शिवानी"), so also try the exact title alone.
+  if (title && author) queries.push(`intitle:${title}`);
   for (const q of queries) {
     const items = ((await getJson(googleUrl(q)))?.items || []).map((i) => i.volumeInfo).filter(Boolean);
     const matches = items.filter((v) => v.title && (q.startsWith('isbn:') || sameTitle(v.title)));
@@ -195,12 +197,15 @@ export async function bookDetails({ isbn: rawIsbn, title, author }) {
   }
 
   if (!title) return info;
-  const ol = await getJson(
-    `https://openlibrary.org/search.json?title=${encodeURIComponent(title)}` +
-      `${author ? `&author=${encodeURIComponent(author.split(',')[0])}` : ''}&limit=3` +
-      '&fields=key,title,first_publish_year,number_of_pages_median,subject,publisher',
-  );
-  const doc = (ol?.docs || []).find((d) => sameTitle(d.title));
+  const olSearch = async (byAuthor) =>
+    ((
+      await getJson(
+        `https://openlibrary.org/search.json?title=${encodeURIComponent(title)}` +
+          `${byAuthor ? `&author=${encodeURIComponent(author.split(',')[0])}` : ''}&limit=3` +
+          '&fields=key,title,first_publish_year,number_of_pages_median,subject,publisher',
+      )
+    )?.docs || []).find((d) => sameTitle(d.title));
+  const doc = (author && (await olSearch(true))) || (await olSearch(false));
   if (!doc) return info;
   const work = doc.key ? await getJson(`https://openlibrary.org${doc.key}.json`) : null;
   const description = plainText(typeof work?.description === 'string' ? work.description : work?.description?.value);
