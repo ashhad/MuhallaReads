@@ -601,7 +601,6 @@ $$('.mode').forEach((b) =>
     if (mode === 'scan') startScanner();
     else stopScanner();
     if (mode === 'type') $('#type-input').focus();
-    if (mode === 'photo') $('#photo-input').click();
   }),
 );
 
@@ -705,26 +704,61 @@ async function onBarcode(code) {
 
 // Shelf / cover photo
 
-$('#photo-input').addEventListener('change', async (e) => {
-  const file = e.target.files[0];
-  e.target.value = '';
-  if (!file) return;
+const MAX_PHOTOS = 5; // per go; each photo is one paid scan and counts toward the daily limit
+
+for (const id of ['#photo-pick', '#photo-camera']) {
+  $(id).addEventListener('change', (e) => {
+    const files = [...e.target.files];
+    e.target.value = '';
+    if (files.length) scanPhotos(files);
+  });
+}
+
+/** Reads photos one after another, adding what each finds to "Ready to add". */
+async function scanPhotos(all) {
   const status = $('#photo-status');
-  status.textContent = 'Reading your photo… this can take up to a minute for a full shelf.';
+  if (scanPhotos.busy) return;
+  scanPhotos.busy = true;
+  $$('#panel-photo .file-btn').forEach((l) => l.classList.add('disabled'));
+  const files = all.slice(0, MAX_PHOTOS);
+  // Overlapping photos of one shelf show some books twice: list each title once.
+  const key = (b) => `${b.title}`.toLowerCase().replace(/[\s\p{P}]+/gu, ' ').trim();
+  const have = new Set(state.tray.map(key));
+  let found = 0;
+  let unsure = 0;
+  let error = '';
   try {
-    const image = await shrinkImage(file, 2000);
-    const { results } = await api('/api/scan-photo', { method: 'POST', body: { image } });
-    const unsure = results.filter((b) => b.unsure).length;
-    status.textContent = results.length
-      ? `Found ${results.length} book${results.length > 1 ? 's' : ''}.` +
-        (unsure ? ` ${unsure} we couldn't read for sure ${unsure > 1 ? 'are' : 'is'} unticked: check ${unsure > 1 ? 'them' : 'it'}.` : '') +
-        ' Untick any that are wrong, then tap “Add” at the bottom to save them.'
-      : 'No readable titles found. Try a closer, well-lit photo.';
-    addToTray(results);
-  } catch (ex) {
-    status.textContent = ex.message;
+    for (const [i, file] of files.entries()) {
+      status.textContent =
+        files.length > 1
+          ? `Reading photo ${i + 1} of ${files.length}…`
+          : 'Reading your photo… this can take up to a minute for a full shelf.';
+      try {
+        const image = await shrinkImage(file, 2560);
+        const { results } = await api('/api/scan-photo', { method: 'POST', body: { image } });
+        const fresh = results.filter((b) => !have.has(key(b)));
+        fresh.forEach((b) => have.add(key(b)));
+        found += fresh.length;
+        unsure += fresh.filter((b) => b.unsure).length;
+        addToTray(fresh);
+      } catch (ex) {
+        error = files.length > 1 ? `Photo ${i + 1}: ${ex.message}` : ex.message;
+        break; // e.g. the daily limit: the rest would fail too
+      }
+    }
+  } finally {
+    scanPhotos.busy = false;
+    $$('#panel-photo .file-btn').forEach((l) => l.classList.remove('disabled'));
   }
-});
+  const skipped = all.length > MAX_PHOTOS ? ` Only the first ${MAX_PHOTOS} photos were read.` : '';
+  status.textContent = found
+    ? `Found ${found} book${found > 1 ? 's' : ''}.` +
+      (unsure ? ` ${unsure} we couldn't read for sure ${unsure > 1 ? 'are' : 'is'} unticked: check ${unsure > 1 ? 'them' : 'it'}.` : '') +
+      ' Untick any that are wrong, then tap “Add” at the bottom to save them.' +
+      skipped +
+      (error ? ` ${error}` : '')
+    : error || 'No readable titles found. Try a closer, well-lit photo.' + skipped;
+}
 
 function shrinkImage(file, maxSide) {
   return new Promise((resolve, reject) => {
@@ -736,7 +770,11 @@ function shrinkImage(file, maxSide) {
       canvas.height = Math.round(img.height * scale);
       canvas.getContext('2d').drawImage(img, 0, 0, canvas.width, canvas.height);
       URL.revokeObjectURL(img.src);
-      resolve(canvas.toDataURL('image/jpeg', 0.85));
+      // Stay under the server's 5 MB photo limit: lower the JPEG quality for very detailed photos.
+      let quality = 0.85;
+      let url = canvas.toDataURL('image/jpeg', quality);
+      while (url.length * 0.75 > 4.5e6 && quality > 0.5) url = canvas.toDataURL('image/jpeg', (quality -= 0.1));
+      resolve(url);
     };
     img.onerror = () => reject(new Error('Could not open that image.'));
     img.src = URL.createObjectURL(file);

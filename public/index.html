@@ -75,8 +75,13 @@
       </div>
 
       <div id="panel-photo" class="panel" hidden>
-        <p class="muted small">Take a clear photo of a book cover, a pile, or your shelf with the spines readable.</p>
-        <label class="btn primary file-btn">Take or choose photo<input id="photo-input" type="file" accept="image/*" capture="environment" hidden></label>
+        <p class="muted small">Photograph your shelf with the spines readable, a pile, or a cover. For the best results,
+          take the photo with your camera app first (steady, good light, close enough to read the spines), then choose
+          it here. A long shelf? Take it in parts and choose up to 5 photos at once.</p>
+        <div class="row wrap">
+          <label class="btn primary file-btn">Choose photos<input id="photo-pick" type="file" accept="image/*" multiple hidden></label>
+          <label class="btn file-btn">Take a photo<input id="photo-camera" type="file" accept="image/*" capture="environment" hidden></label>
+        </div>
         <p id="photo-status" class="muted small"></p>
       </div>
 
