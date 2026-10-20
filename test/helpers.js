@@ -20,7 +20,8 @@ export const baseSettings = {
   templatesEnabled: true,
   photoDailyLimit: 10,
   photoMonthlyLimit: 300,
-  photoMonthlyBudgetUsd: 1,
+  photoMonthlyBudgetInr: 88,
+  usdInrRate: 88, // so the budget is $1
 };
 
 export function fakeTransport() {

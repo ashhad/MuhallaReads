@@ -1,7 +1,7 @@
 // Hard limits on photo recognition, the one feature that costs money each time it's used (Claude API).
 //  - Each member can scan `photoDailyLimit` photos in any 24 hours, one at a time.
 //  - Every scan's real cost (from the token counts Claude reports) is added to this month's total.
-//    Scanning pauses for everyone once the month reaches `photoMonthlyBudgetUsd` or `photoMonthlyLimit`
+//    Scanning pauses for everyone once the month reaches `photoMonthlyBudgetInr` or `photoMonthlyLimit`
 //    photos, and starts again on the 1st.
 //  - Admins are told on WhatsApp at 50%, 80% and 100% of the month's limits, and get a weekly summary
 //    on Monday mornings in weeks when photos were scanned.
@@ -11,17 +11,21 @@ const DAY_MS = 86400_000;
 
 export class PhotoLimitError extends Error {}
 
-const usd = (n) => `$${n.toFixed(2)}`;
+const inr = (n) => `₹${n.toFixed(2)}`;
 
 export function createPhotoLimits({ store, notifier, settings, clock = () => new Date() }) {
   const busy = new Set(); // member ids with a photo being read right now
 
   function usage() {
     const u = store.usageFor(clock().toISOString().slice(0, 7));
+    const rate = settings.usdInrRate;
     return {
       photos: u.photos || 0,
+      // Stored in US dollars (what Anthropic bills); shown in rupees.
       costUsd: u.photo_cost || 0,
-      budgetUsd: settings.photoMonthlyBudgetUsd,
+      budgetUsd: settings.photoMonthlyBudgetInr / rate,
+      costInr: (u.photo_cost || 0) * rate,
+      budgetInr: settings.photoMonthlyBudgetInr,
       photoLimit: settings.photoMonthlyLimit,
       dailyLimit: settings.photoDailyLimit,
     };
@@ -77,14 +81,14 @@ export function createPhotoLimits({ store, notifier, settings, clock = () => new
     const crossed = ALERT_LEVELS.filter((l) => before < l && level(u) >= l).pop();
     if (crossed === 100) {
       await alertAdmins(
-        `📷 Photo scanning is now *paused for everyone* until next month: ${usd(u.costUsd)} of the ` +
-          `${usd(u.budgetUsd)} budget, ${u.photos} of ${u.photoLimit} photos.\n` +
-          'To resume sooner, raise PHOTO_MONTHLY_BUDGET_USD or PHOTO_MONTHLY_LIMIT on the server.',
+        `📷 Photo scanning is now *paused for everyone* until next month: ${inr(u.costInr)} of the ` +
+          `${inr(u.budgetInr)} budget, ${u.photos} of ${u.photoLimit} photos.\n` +
+          'To resume sooner, raise PHOTO_MONTHLY_BUDGET_INR or PHOTO_MONTHLY_LIMIT on the server.',
       );
     } else if (crossed) {
       await alertAdmins(
-        `📷 Photo scanning has used ${crossed}% of this month's limit: ${usd(u.costUsd)} of the ` +
-          `${usd(u.budgetUsd)} budget, ${u.photos} of ${u.photoLimit} photos. It pauses for everyone at 100%.`,
+        `📷 Photo scanning has used ${crossed}% of this month's limit: ${inr(u.costInr)} of the ` +
+          `${inr(u.budgetInr)} budget, ${u.photos} of ${u.photoLimit} photos. It pauses for everyone at 100%.`,
       );
     }
     return result;
@@ -114,8 +118,8 @@ export function createPhotoLimits({ store, notifier, settings, clock = () => new
     if (!lastWeek.photos) return false;
     const u = usage();
     await alertAdmins(
-      `📊 Weekly photo scanning check: ${lastWeek.photos} photos last week, costing ${usd(lastWeek.cost)}.\n` +
-        `This month so far: ${usd(u.costUsd)} of the ${usd(u.budgetUsd)} budget, ${u.photos} of ${u.photoLimit} photos.`,
+      `📊 Weekly photo scanning check: ${lastWeek.photos} photos last week, costing ${inr(lastWeek.cost * settings.usdInrRate)}.\n` +
+        `This month so far: ${inr(u.costInr)} of the ${inr(u.budgetInr)} budget, ${u.photos} of ${u.photoLimit} photos.`,
     );
     return true;
   }

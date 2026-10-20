@@ -45,7 +45,15 @@ export const config = {
   // Hard limits (see src/photos.js): per member per 24 hours, and for everyone per month.
   photoDailyLimit: num('PHOTO_DAILY_LIMIT', 10),
   photoMonthlyLimit: num('PHOTO_MONTHLY_LIMIT', 300),
-  photoMonthlyBudgetUsd: num('PHOTO_MONTHLY_BUDGET_USD', 1),
+  // Anthropic bills in US dollars; costs are shown in rupees at this rate. Raise it (e.g. to 105) to
+  // include 18% GST and your card's foreign-exchange fee.
+  usdInrRate: num('USD_INR_RATE', 88),
+  // Monthly spend cap in rupees. An older PHOTO_MONTHLY_BUDGET_USD setting still works if this isn't set.
+  photoMonthlyBudgetInr: env.PHOTO_MONTHLY_BUDGET_INR
+    ? num('PHOTO_MONTHLY_BUDGET_INR', 90)
+    : env.PHOTO_MONTHLY_BUDGET_USD
+      ? num('PHOTO_MONTHLY_BUDGET_USD', 1) * num('USD_INR_RATE', 88)
+      : 90,
 
   googleBooksApiKey: env.GOOGLE_BOOKS_API_KEY || '',
 

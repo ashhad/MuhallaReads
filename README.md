@@ -51,7 +51,7 @@ and the app is built to stay within the free allowance most of the time:
 
 A 50-household pilot should cost roughly ₹5–15 a month. Admins can send `stats` to the bot to
 see this month's usage. Photo scanning (optional) is billed separately by Anthropic and capped by
-`PHOTO_MONTHLY_BUDGET_USD` (default $1 a month).
+`PHOTO_MONTHLY_BUDGET_INR` (default ₹90 a month).
 
 ## Run it
 
@@ -121,12 +121,13 @@ See `.env.example` for all of them. The main ones:
 | `CLAUDE_MODEL` | Model that reads photos (default `claude-haiku-5-5`) |
 | `PHOTO_DAILY_LIMIT` | Photos each member can scan in 24 hours (default 10) |
 | `PHOTO_MONTHLY_LIMIT` | Photos everyone together can scan per month (default 300) |
-| `PHOTO_MONTHLY_BUDGET_USD` | Monthly spend cap for photo scanning, in US dollars (default 1) |
+| `PHOTO_MONTHLY_BUDGET_INR` | Monthly spend cap for photo scanning, in rupees (default 90) |
+| `USD_INR_RATE` | Rupees per US dollar for showing costs (default 88; ~105 includes GST and card fees) |
 
 Photos are read by Claude, one API call each. Haiku (the default) costs about $0.001 (₹0.10) per
 shelf photo; Sonnet and Opus read crowded shelves better but cost roughly 20× and 40× more. The app
 works out each photo's real cost from the token counts Claude returns and pauses scanning for
-everyone once the month reaches `PHOTO_MONTHLY_BUDGET_USD` or `PHOTO_MONTHLY_LIMIT`. Admins get a
+everyone once the month reaches `PHOTO_MONTHLY_BUDGET_INR` or `PHOTO_MONTHLY_LIMIT`. Admins get a
 WhatsApp message at 50%, 80% and 100%, a summary on Monday mornings in weeks with scans, and see
 the running total on their Me tab and in `stats`. Sonnet and Opus requests also opt in to
 Anthropic's server-side fallback (`fallbacks: "default"`), so a declined photo is retried by

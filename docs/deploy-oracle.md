@@ -194,7 +194,7 @@ log in as `ubuntu` with that password, and run `sudo bash ~/MuhallaReads/deploy/
 - **Photo scanning** costs money too. Each photo is one Claude API call: about ₹0.10 with the
   default Haiku model, ₹2 with `CLAUDE_MODEL=claude-sonnet-5-5`, ₹4 with `claude-opus-5-5`. Hard
   limits keep it small: `PHOTO_DAILY_LIMIT` (10 per member a day), `PHOTO_MONTHLY_LIMIT` (300 a
-  month) and `PHOTO_MONTHLY_BUDGET_USD` (default $1 a month), after which scanning pauses until the
+  month) and `PHOTO_MONTHLY_BUDGET_INR` (default ₹90 a month; costs are converted from dollars at `USD_INR_RATE`, default 88), after which scanning pauses until the
   1st. Admins are messaged on WhatsApp at 50%, 80% and 100%. As a backstop, also set a monthly
   spend limit in the Anthropic Console (Settings → Limits). To turn it off, leave
   `ANTHROPIC_API_KEY` empty. Typing and barcode scanning are always free.

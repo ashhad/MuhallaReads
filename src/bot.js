@@ -158,7 +158,7 @@ export function createBot({ store, library, notifier, settings }) {
         return reply(
           `📊 ${s.members} members · ${s.books} books · ${s.loans} active loans\n` +
             `WhatsApp this month: ${u.templates}/${settings.monthlyTemplateLimit} paid templates (≈ ₹${(u.templates * 0.136).toFixed(2)}), ${u.service} free replies\n` +
-            `Photo scans this month: ${u.photos}/${settings.photoMonthlyLimit} photos, $${u.photo_cost.toFixed(2)} of the $${settings.photoMonthlyBudgetUsd.toFixed(2)} budget`,
+            `Photo scans this month: ${u.photos}/${settings.photoMonthlyLimit} photos, ₹${(u.photo_cost * settings.usdInrRate).toFixed(2)} of the ₹${settings.photoMonthlyBudgetInr.toFixed(2)} budget`,
         );
       },
     ],

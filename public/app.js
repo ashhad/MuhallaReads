@@ -214,7 +214,7 @@ function renderMe() {
     const pct = Math.min(100, Math.round(Math.max(p.costUsd / p.budgetUsd, p.photos / p.photoLimit) * 100) || 0);
     $('#admin-usage').innerHTML = `
       <div class="muted small">Admin · this month's costs</div>
-      <div><strong>Photo scans:</strong> $${p.costUsd.toFixed(2)} of $${p.budgetUsd.toFixed(2)} · ${p.photos} of ${p.photoLimit} photos${pct >= 100 ? ' · <strong>paused</strong>' : ''}</div>
+      <div><strong>Photo scans:</strong> ₹${p.costInr.toFixed(2)} of ₹${p.budgetInr.toFixed(2)} · ${p.photos} of ${p.photoLimit} photos${pct >= 100 ? ' · <strong>paused</strong>' : ''}</div>
       <div class="meter"><span style="width: ${pct}%"></span></div>
       <div class="muted small">Up to ${p.dailyLimit} photos per member a day. WhatsApp: ${u.templates} of ${u.templateLimit} paid templates.</div>`;
   }

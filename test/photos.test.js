@@ -45,14 +45,14 @@ test('each member gets a daily limit, one photo at a time', async () => {
 });
 
 test('the monthly budget pauses scanning for everyone and alerts admins at 50, 80 and 100%', async () => {
-  const { w, photos, read } = await world({ photoMonthlyBudgetUsd: 0.1 });
+  const { w, photos, read } = await world({ photoMonthlyBudgetInr: 8.8 }) // $0.10 at ₹88;
   const bilal = w.member(BILAL);
   w.transport.clear();
 
   await photos.scan(bilal, read(0.04));
   assert.equal(w.transport.to(AYESHA).length, 0);
   await photos.scan(bilal, read(0.02)); // 60%
-  assert.match(w.transport.to(AYESHA).at(-1).text, /used 50% of this month's limit: \$0\.06 of the \$0\.10 budget, 2 of 300 photos/);
+  assert.match(w.transport.to(AYESHA).at(-1).text, /used 50% of this month's limit: ₹5\.28 of the ₹8\.80 budget, 2 of 300 photos/);
   await photos.scan(bilal, read(0.025)); // 85%
   assert.match(w.transport.to(AYESHA).at(-1).text, /used 80%/);
   await photos.scan(bilal, read(0.02)); // 105%: the call already ran, so it's recorded, then scanning stops
@@ -61,7 +61,7 @@ test('the monthly budget pauses scanning for everyone and alerts admins at 50, 8
   assert.equal(w.transport.to(BILAL).length, 0); // only admins are told
 
   await assert.rejects(photos.scan(w.member(AYESHA), read(0.01)), /paused until next month/);
-  assert.match(await w.say(AYESHA, 'stats'), /Photo scans this month: 4\/300 photos, \$0\.1\d of the \$0\.10 budget/);
+  assert.match(await w.say(AYESHA, 'stats'), /Photo scans this month: 4\/300 photos, ₹9\.\d\d of the ₹8\.80 budget/);
 
   w.time.now += 32 * 86400_000; // next month
   await photos.scan(bilal, read(0.01));
@@ -87,29 +87,31 @@ test('admins get a weekly summary on Monday mornings, only in weeks with photos'
   w.time.now = Date.parse('2026-10-26T05:00:00Z'); // next Monday
   w.store.touchInbound(w.member(AYESHA).id, new Date(w.time.now).toISOString());
   assert.equal(await photos.weeklySummary(), true);
-  assert.match(w.transport.to(AYESHA).at(-1).text, /Weekly photo scanning check: 1 photos last week, costing \$0\.00/);
+  assert.match(w.transport.to(AYESHA).at(-1).text, /Weekly photo scanning check: 1 photos last week, costing ₹0\.18/);
   assert.equal(await photos.weeklySummary(), false); // once a week
 });
 
 test('budget settings accept currency signs; unreadable values fall back to the default', async () => {
-  const load = async (value) => {
-    process.env.PHOTO_MONTHLY_BUDGET_USD = value;
-    const { config } = await import(`../src/config.js?${encodeURIComponent(value)}`);
-    return config.photoMonthlyBudgetUsd;
+  const load = async (vars) => {
+    Object.assign(process.env, vars);
+    const { config } = await import(`../src/config.js?${encodeURIComponent(JSON.stringify(vars))}`);
+    for (const k of Object.keys(vars)) delete process.env[k];
+    return config.photoMonthlyBudgetInr;
   };
   const warn = console.warn;
   console.warn = () => {};
   try {
-    assert.equal(await load('4$'), 4);
-    assert.equal(await load('$ 2.5'), 2.5);
-    assert.equal(await load('four'), 1);
+    assert.equal(await load({ PHOTO_MONTHLY_BUDGET_INR: '₹ 400' }), 400);
+    assert.equal(await load({ PHOTO_MONTHLY_BUDGET_INR: '1,000' }), 1000);
+    assert.equal(await load({ PHOTO_MONTHLY_BUDGET_INR: 'lots' }), 90);
+    assert.equal(await load({ PHOTO_MONTHLY_BUDGET_USD: '4$' }), 352); // older setting, at the default ₹88
+    assert.equal(await load({ PHOTO_MONTHLY_BUDGET_USD: '4', USD_INR_RATE: '100' }), 400);
   } finally {
     console.warn = warn;
-    delete process.env.PHOTO_MONTHLY_BUDGET_USD;
   }
 });
 
 test('a budget that is not a number pauses scanning instead of removing the cap', async () => {
-  const { w, photos, read } = await world({ photoMonthlyBudgetUsd: NaN });
+  const { w, photos, read } = await world({ photoMonthlyBudgetInr: NaN });
   await assert.rejects(photos.scan(w.member(BILAL), read(0)), /paused until next month/);
 });

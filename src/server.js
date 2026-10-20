@@ -300,7 +300,7 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
   app.listen(config.port, config.host, () => {
     console.log(`📚 ${config.communityName} running on http://localhost:${config.port}`);
     console.log(
-      `   Photo scanning: ${visionEnabled() ? `on (${config.claudeModel}, up to $${config.photoMonthlyBudgetUsd}/month)` : 'off (set ANTHROPIC_API_KEY)'}`,
+      `   Photo scanning: ${visionEnabled() ? `on (${config.claudeModel}, up to ₹${config.photoMonthlyBudgetInr}/month)` : 'off (set ANTHROPIC_API_KEY)'}`,
     );
     console.log(
       `   WhatsApp: ${whatsappEnabled() ? `on (templates ${config.templatesEnabled ? 'on' : 'off'}, budget ${config.monthlyTemplateLimit}/month)` : 'off'}`,
