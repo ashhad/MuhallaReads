@@ -167,3 +167,10 @@ test('photo results that were hard to read, or not found anywhere, come back unt
     ['Why Things Aren’t', false],
   ]);
 });
+
+test('the app files are always revalidated, so phones pick up updates', async () => {
+  for (const file of ['/', '/app.js', '/style.css']) {
+    const res = await fetch(base + file);
+    assert.equal(res.headers.get('cache-control'), 'no-cache', file);
+  }
+});

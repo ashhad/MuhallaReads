@@ -313,7 +313,9 @@ export function createApp({ store, deps = {}, settings = config } = {}) {
       ? res.sendFile(path.join(root, 'node_modules', fonts[req.params.file]), { maxAge: '30d' })
       : next(),
   );
-  app.use(express.static(path.join(root, 'public')));
+  // The app's own files change with every update, so browsers must check for a new version each time
+  // (a quick "not modified" when nothing changed). Without this, phones kept running an old app.js.
+  app.use(express.static(path.join(root, 'public'), { setHeaders: (res) => res.setHeader('Cache-Control', 'no-cache') }));
 
   app.use((err, _req, res, _next) => {
     if (err instanceof LibraryError) err.status = 400;
