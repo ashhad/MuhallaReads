@@ -206,6 +206,14 @@ async function openPendingLink() {
 function renderMe() {
   $('#me-name').textContent = state.me.name;
   $('#me-place').textContent = state.me.place || 'Add your building or locality';
+  const pending = state.me.status === 'pending';
+  $('#pending-note').hidden = !pending;
+  $$('.add-modes, #panel-type, #panel-scan, #panel-photo').forEach((el) => el.classList.toggle('locked', pending));
+  $('#invite-card').hidden = !state.me.invite;
+  $('#alerts-row').hidden = pending;
+  $('#book-alerts').checked = Boolean(state.me.bookAlerts);
+  $('#add-pending').hidden = !pending;
+  renderPending(state.me.pending);
   // Admins only: this month's running costs.
   const u = state.me.usage;
   $('#admin-usage').hidden = !u;
@@ -343,6 +351,10 @@ async function runSearch() {
 
 /** Who has a copy, with a Request button for each available copy that isn't yours. */
 function ownersHtml(g) {
+  if (g.copies.every((c) => !c.owner)) {
+    const n = g.copies.length;
+    return `<div class="owner muted small">${n} cop${n > 1 ? 'ies' : 'y'} · owners shown once you’re approved</div>`;
+  }
   const myOpen = new Map(
     state.requests.filter((r) => r.role === 'borrower' && ['pending', 'accepted'].includes(r.status)).map((r) => [r.book.id, r]),
   );
@@ -931,3 +943,82 @@ window.addEventListener('hashchange', () => {
 });
 
 boot();
+
+// ---------- invites, alerts and approvals (Me tab) ----------
+
+const inviteUrl = () => `${location.origin}/?join=${state.me.invite}`;
+
+$('#share-invite').addEventListener('click', async () => {
+  const name = state.config.communityName || 'MohallaReads';
+  const text = `Join me on ${name}, our neighbourhood book library. An admin approves new members.`;
+  if (navigator.share) {
+    try {
+      return await navigator.share({ title: name, text, url: inviteUrl() });
+    } catch (ex) {
+      if (ex.name === 'AbortError') return; // they closed the share sheet
+    }
+  }
+  window.open(`https://wa.me/?text=${encodeURIComponent(`${text} ${inviteUrl()}`)}`, '_blank', 'noopener');
+});
+
+$('#copy-invite').addEventListener('click', async () => {
+  try {
+    await navigator.clipboard.writeText(inviteUrl());
+    toast('Invite link copied.');
+  } catch {
+    toast(inviteUrl());
+  }
+});
+
+$('#book-alerts').addEventListener('change', async (e) => {
+  try {
+    state.me = (await api('/api/me', { method: 'PATCH', body: { bookAlerts: e.target.checked } })).member;
+    toast(e.target.checked ? 'You’ll hear about new books on WhatsApp.' : 'No more new-book messages.');
+  } catch (ex) {
+    e.target.checked = !e.target.checked;
+    toast(ex.message);
+  }
+});
+
+/** Admins: people waiting to join, with Approve / Decline. */
+function renderPending(list) {
+  const box = $('#admin-pending');
+  $('#me-badge').hidden = !list?.length;
+  $('#me-badge').textContent = list?.length || '';
+  box.hidden = !list?.length;
+  if (!list?.length) return;
+  box.innerHTML =
+    `<strong>Waiting to join (${list.length})</strong>` +
+    list
+      .map(
+        (p) => `<div class="pending-row"><div><div>${esc(p.name)}${p.place ? ` <span class="place">· ${esc(p.place)}</span>` : ''}</div>
+          <div class="muted small">${p.invitedBy ? `Invited by ${esc(p.invitedBy)}` : 'Used the join code'} · ${fmtDate(p.since)}</div></div>
+          <div class="row"><button class="btn small primary" data-approve="${p.id}">Approve</button>
+          <button class="btn small" data-decline="${p.id}" data-name="${esc(p.name)}">Decline</button></div></div>`,
+      )
+      .join('');
+  box.querySelectorAll('[data-approve]').forEach((btn) =>
+    btn.addEventListener('click', () => decideMember(btn.dataset.approve, 'approve')),
+  );
+  box.querySelectorAll('[data-decline]').forEach((btn) =>
+    btn.addEventListener('click', async () => {
+      const ok = await sheet({
+        title: `Decline ${btn.dataset.name}?`,
+        text: 'They’ll be told their request wasn’t approved, and their details will be deleted.',
+        ok: 'Decline',
+      });
+      if (ok !== null) decideMember(btn.dataset.decline, 'decline');
+    }),
+  );
+}
+
+async function decideMember(id, action) {
+  try {
+    await api(`/api/admin/members/${id}/${action}`, { method: 'POST' });
+    toast(action === 'approve' ? 'Approved. They’ve been told on WhatsApp.' : 'Declined.');
+  } catch (ex) {
+    toast(ex.message);
+  }
+  state.me = (await api('/api/me')).member;
+  renderMe();
+}

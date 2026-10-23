@@ -174,3 +174,45 @@ test('the app files are always revalidated, so phones pick up updates', async ()
     assert.equal(res.headers.get('cache-control'), 'no-cache', file);
   }
 });
+
+test('newcomers waiting for approval can browse titles only; an admin approves them in the app', async () => {
+  const owner = await signIn('919844444444', 'Owen');
+  await call('/api/books', { method: 'POST', token: owner, body: { books: [{ title: 'Malgudi Days', author: 'R. K. Narayan' }] } });
+
+  const newbie = store.createMember({ name: 'Riya', phone: '919855555555', status: 'pending', joinedVia: 'code' });
+  store.setPlace(newbie.id, { building: '', locality: 'Bani Park' });
+  const t = await signIn('919855555555', 'Riya', null);
+
+  const me = (await call('/api/me', { token: t })).data.member;
+  assert.equal(me.status, 'pending');
+  assert.equal(me.invite, null);
+  const hit = (await call('/api/books?q=malgudi', { token: t })).data.results[0];
+  assert.equal(hit.title, 'Malgudi Days');
+  assert.equal(hit.copies[0].owner, null); // no owner names yet
+  for (const [path, body] of [
+    ['/api/books', { books: [{ title: 'X' }] }],
+    ['/api/requests', { bookId: hit.copies[0].bookId }],
+    ['/api/wishes', { query: 'Dune' }],
+  ]) {
+    assert.equal((await call(path, { method: 'POST', token: t, body })).status, 403, path);
+  }
+
+  // Ayesha is an admin: she sees Riya waiting and approves her.
+  const admin = await signIn(AYESHA, 'Ayesha');
+  const pending = (await call('/api/me', { token: admin })).data.member.pending;
+  assert.deepEqual(pending.find((p) => p.id === newbie.id), { id: newbie.id, name: 'Riya', place: 'Bani Park', invitedBy: null, since: newbie.created_at });
+  assert.equal((await call(`/api/admin/members/${newbie.id}/approve`, { method: 'POST', token: owner })).status, 403); // not an admin
+  assert.equal((await call(`/api/admin/members/${newbie.id}/approve`, { method: 'POST', token: admin })).status, 200);
+
+  const after = (await call('/api/me', { token: t })).data.member;
+  assert.equal(after.status, 'active');
+  assert.match(after.invite, /^[a-z0-9]{7}$/);
+  assert.equal((await call('/api/books?q=malgudi', { token: t })).data.results[0].copies[0].owner.name, 'Owen');
+});
+
+test('members can turn new-book alerts off in the app', async () => {
+  const t = await signIn('919866666666', 'Neel');
+  assert.equal((await call('/api/me', { token: t })).data.member.bookAlerts, true);
+  const off = await call('/api/me', { method: 'PATCH', token: t, body: { bookAlerts: false } });
+  assert.equal(off.data.member.bookAlerts, false);
+});

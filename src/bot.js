@@ -2,7 +2,7 @@
 // Everything else (finding, adding, requesting, chatting) happens in the web app; any other message
 // gets a button that signs the member in there.
 // Members only ever see each other's display names. Phone numbers stay on the server.
-import { who } from './library.js';
+import { who, LibraryError } from './library.js';
 import { placeOf } from './db.js';
 
 const MAX_MESSAGE = 3900; // WhatsApp's limit is 4096 characters
@@ -28,8 +28,10 @@ export function helpText(communityName, { admin = false, photos = false } = {}) 
     '',
     'Here on WhatsApp you get notifications (requests, replies, reminders) and can manage your account:',
     '👤 `name Ayesha` · 🏢 `building Green Park Tower` · 📍 `locality Saket`',
+    '💌 `invite`: your link for inviting a neighbour (an admin approves everyone)',
+    '🔔 `alerts off` / `alerts on`: messages when neighbours add new books',
     '🗑️ `delete me`: delete your account and all your data',
-    ...(admin ? ['', '🛠️ Admin: `stats` · `members` · `remove member 12`'] : []),
+    ...(admin ? ['', '🛠️ Admin: `pending` · `approve 12` · `decline 12` · `stats` · `members` · `remove member 12`'] : []),
     '',
     '🔒 Your number is never shown to anyone.',
   ].join('\n');
@@ -53,7 +55,8 @@ const clip = (s) => (s.length > MAX_MESSAGE ? s.slice(0, MAX_MESSAGE - 20) + '\n
 export function createBot({ store, library, notifier, settings }) {
   const confirmingDelete = new Set();
   const setupStep = new Map(); // member id -> 'building' | 'locality' while answering the setup questions
-  const isAdmin = (member) => settings.adminPhones?.includes(member.phone);
+  const isAdminPhone = (phone) => Boolean(settings.adminPhones?.includes(phone));
+  const isAdmin = (member) => isAdminPhone(member.phone) && member.status === 'active';
 
   /** A one-time sign-in button for the web app (works once, for 15 minutes). */
   const signInLink = (member) =>
@@ -94,7 +97,17 @@ export function createBot({ store, library, notifier, settings }) {
     }
     if (locality) store.setPlace(member.id, { building: member.building, locality });
     setupStep.delete(member.id);
-    const me = store.memberById(member.id);
+    let me = store.memberById(member.id);
+    if (me.status === 'pending' && (await library.askApproval(me)) === 'asked') {
+      return openAppReply(
+        me,
+        reply,
+        `✅ Thanks, ${me.name}! Neighbours will see you as *${who(me)}* once an admin approves you. ` +
+          "You'll get a message here, usually within a day.\n" +
+          'Meanwhile you can look around the app and see which books are in the library.',
+      );
+    }
+    me = store.memberById(member.id);
     return openAppReply(
       me,
       reply,
@@ -131,6 +144,63 @@ export function createBot({ store, library, notifier, settings }) {
     [/^building\s+([\s\S]+)$/i, (m, x, reply) => changePlace(m, 'building', x[1], reply)],
     [/^(locality|area)\s+([\s\S]+)$/i, (m, x, reply) => changePlace(m, 'locality', x[2], reply)],
     [
+      /^invite\b/i,
+      (m, _, reply) => {
+        if (m.status !== 'active') return reply("You can invite neighbours once an admin has approved you.");
+        if (!settings.publicUrl) return reply("The app's address isn't set up yet. Ask the admin.");
+        const url = `${settings.publicUrl}/?join=${store.refCodeFor(m.id)}`;
+        return reply(
+          `💌 Your invite link: ${url}\n\nForward it to a neighbour you know. When they join, an admin checks and ` +
+            "approves them, and they'll show as invited by you.",
+        );
+      },
+    ],
+    [
+      /^alerts?\s+(on|off)$/i,
+      (m, x, reply) => {
+        const on = x[1].toLowerCase() === 'on';
+        store.setBookAlerts(m.id, on);
+        return reply(on ? "🔔 You'll hear about new books again." : "🔕 OK, no more new-book messages. Send *alerts on* to get them back.");
+      },
+    ],
+    [
+      /^pending$/i,
+      (m, _, reply) => {
+        if (!isAdmin(m)) return false;
+        const list = store.pendingMembers();
+        if (!list.length) return reply('Nobody is waiting for approval.');
+        return reply(
+          clip(
+            '🆕 Waiting for approval:\n' +
+              list
+                .map((p) => {
+                  const by = p.referrer_name ? `invited by ${p.referrer_name}` : 'join code';
+                  return `#${p.id} ${p.name} (${placeOf(p)}), ${by}`;
+                })
+                .join('\n') +
+              '\n\nReply *approve 12* or *decline 12*.',
+          ),
+        );
+      },
+    ],
+    [
+      /^(approve|decline)\s+#?(\d+)$/i,
+      async (m, x, reply) => {
+        if (!isAdmin(m)) return false;
+        try {
+          if (x[1].toLowerCase() === 'approve') {
+            const { member, already } = await library.approveMember(x[2]);
+            return reply(already ? `${member.name} is already a member.` : `✅ Approved ${who(member)}. They've been told.`);
+          }
+          const gone = await library.declineMember(x[2]);
+          return reply(`Declined ${gone.name}. Their details have been deleted.`);
+        } catch (err) {
+          if (err instanceof LibraryError) return reply(err.message);
+          throw err;
+        }
+      },
+    ],
+    [
       /^(delete me|delete my account|delete account)$/i,
       (m, _, reply) => {
         confirmingDelete.add(m.id);
@@ -156,7 +226,7 @@ export function createBot({ store, library, notifier, settings }) {
         const s = store.stats();
         const u = store.usageFor();
         return reply(
-          `📊 ${s.members} members · ${s.books} books · ${s.loans} active loans\n` +
+          `📊 ${s.members} members${s.pending ? ` (+${s.pending} waiting for approval)` : ''} · ${s.books} books · ${s.loans} active loans\n` +
             `WhatsApp this month: ${u.templates}/${settings.monthlyTemplateLimit} paid templates (≈ ₹${(u.templates * 0.136).toFixed(2)}), ${u.service} free replies\n` +
             `Photo scans this month: ${u.photos}/${settings.photoMonthlyLimit} photos, ₹${(u.photo_cost * settings.usdInrRate).toFixed(2)} of the ₹${settings.photoMonthlyBudgetInr.toFixed(2)} budget`,
         );
@@ -166,7 +236,14 @@ export function createBot({ store, library, notifier, settings }) {
       /^members$/i,
       (m, _, reply) => {
         if (!isAdmin(m)) return false;
-        return reply(clip(store.listMembers().map((x) => `#${x.id} ${x.name}`).join('\n')));
+        return reply(
+          clip(
+            store
+              .listMembers()
+              .map((x) => `#${x.id} ${x.name}${x.status === 'pending' ? ' (waiting)' : ''}${x.referrer_name ? `, invited by ${x.referrer_name}` : ''}`)
+              .join('\n'),
+          ),
+        );
       },
     ],
     [
@@ -197,14 +274,23 @@ export function createBot({ store, library, notifier, settings }) {
     if (!member) {
       const join = /^join\b\s*(.*)$/is.exec(text);
       const code = join?.[1]?.trim() || '';
-      if (settings.joinCode && code.toLowerCase() !== settings.joinCode.toLowerCase()) {
+      // A member's personal invite code, or the shared join code. Either way an admin approves them.
+      const referrer = code ? store.memberByRefCode(code) : undefined;
+      const usedCode = Boolean(settings.joinCode) && code.toLowerCase() === settings.joinCode.toLowerCase();
+      if (settings.joinCode && !referrer && !usedCode) {
         return reply(
           `👋 Welcome to *${settings.communityName}*, our neighbourhood book-lending library!\n` +
-            'To join, reply: `join <code>`\n(Ask a neighbour for the code.)',
+            'To join, open the invite link a neighbour sent you, or reply: `join <code>`',
         );
       }
       const name = cleanName(msg.profileName) || 'Neighbour';
-      member = store.createMember({ name, phone: msg.phone });
+      member = store.createMember({
+        name,
+        phone: msg.phone,
+        status: isAdminPhone(msg.phone) ? 'active' : 'pending',
+        joinedVia: referrer ? 'referral' : usedCode ? 'code' : 'open',
+        referredBy: referrer?.id ?? null,
+      });
       store.touchInbound(member.id);
       await reply(
         `🎉 Welcome, ${name}! Neighbours will see you as *${name}* (change it later with \`name …\`).\n` +
@@ -219,21 +305,23 @@ export function createBot({ store, library, notifier, settings }) {
     // Setup isn't finished until there's a building or locality.
     if (setupStep.has(member.id) || !placeOf(member)) return setup(member, text, reply, msg);
 
-    // Messaging the bot delivers any notifications that were waiting.
+    // Messaging the bot delivers any notifications that were waiting, plus news of books added meanwhile.
     const delivered = await notifier.flush(member);
+    const caughtUp = !/^alerts?\b/i.test(text) && (await library.newsSummary(member, reply));
 
     for (const [re, fn] of commands) {
       const match = re.exec(text);
       if (match && (await fn(member, match, reply)) !== false) return;
     }
 
-    if (delivered && !msg.other) return; // they were just catching up on notifications
+    if ((delivered || caughtUp) && !msg.other) return; // they were just catching up on notifications
     const intro = msg.other === 'image'
       ? settings.anthropicApiKey
         ? '📷 Thanks! Add books in the app instead: tap Add › Shelf photo and it reads your whole shelf at once.'
         : '📷 Thanks! Adding books works best in the app: scan the barcode or type the title.'
       : '📚 Searching, adding books, requests and chat all happen in the app.';
-    return openAppReply(member, reply, `${intro}\nSend *help* to see what you can do here.`);
+    const waiting = member.status === 'pending' ? "\n⏳ You're waiting for an admin to approve you; you'll get a message here." : '';
+    return openAppReply(member, reply, `${intro}${waiting}\nSend *help* to see what you can do here.`);
   }
 
   return { handle };

@@ -9,10 +9,12 @@ to share it with one person.
 The **website** (installable on the home screen, nothing to download) is where everything
 happens. **WhatsApp** is used only to join, manage your account, and get notifications.
 
-1. **Join on WhatsApp:** message the library's number with the join code, then answer two quick
-   questions: your **building or society** and your **locality** (at least one). Neighbours see
-   only your name plus those, e.g. "Ayesha · Green Park Tower, Saket", never a flat number or
-   address. The bot replies with a button that signs you into the website.
+1. **Join by invite, approved by an admin:** open a member's personal invite link (or use the join
+   code) and message the library's number, then answer two quick questions: your **building or
+   society** and your **locality** (at least one). Neighbours see only your name plus those, e.g.
+   "Ayesha · Green Park Tower, Saket", never a flat number or address. An admin is told who you are
+   and who invited you, and approves you on WhatsApp or in the app; until then you can browse titles
+   only. Members get new-book alerts (free WhatsApp messages only; `alerts off` to stop).
 2. **Add books in the app:** scan barcodes one after another, type a title, or take a shelf photo
    (optional, needs an Anthropic key).
 3. **Find and request:** search, tap **Request**, add a note if you like.

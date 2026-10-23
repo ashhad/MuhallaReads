@@ -203,7 +203,156 @@ export function createLibrary({ store, notifier, settings, clock = () => new Dat
         template: { name: 'wishlist_alert', params: [book.title, who(member)], url: encodeURIComponent(book.title) },
       });
     }
+    if (member.status === 'active') queueNews(member, result.added);
     return result;
+  }
+
+  // ---------- new-book alerts ----------
+  // Books one member adds within a few minutes go out as one message ("Dune and 17 other books, added
+  // by Aditi"). They're only sent where it's free (the member messaged the bot in the last 24 hours),
+  // at most once every 6 hours each; anyone else gets one "while you were away" summary the next time
+  // they message the bot. Members can turn them off.
+
+  const NEWS_GAP_MS = 6 * 3600_000;
+  const news = new Map(); // owner id -> { ids: book ids, timer }
+
+  function queueNews(owner, books) {
+    const entry = news.get(owner.id) || { ids: [] };
+    entry.ids.push(...books.map((b) => b.id));
+    clearTimeout(entry.timer);
+    entry.timer = setTimeout(
+      () => sendNews(owner.id).catch((err) => console.error('New-book alert failed:', err)),
+      settings.newsDelayMs ?? 10 * 60_000,
+    );
+    entry.timer.unref?.();
+    news.set(owner.id, entry);
+  }
+
+  const listTitles = (titles, total) =>
+    total === 1 ? titles[0] : total === 2 ? `${titles[0]} and ${titles[1]}` : `${titles.slice(0, 2).join(', ')} and ${total - 2} more`;
+
+  async function sendNews(ownerId) {
+    const entry = news.get(ownerId);
+    if (!entry) return 0;
+    clearTimeout(entry.timer);
+    news.delete(ownerId);
+    const owner = store.memberById(ownerId);
+    const books = entry.ids.map((id) => store.bookById(id)).filter(Boolean); // some may have been removed since
+    if (!owner || owner.status !== 'active' || !books.length) return 0;
+
+    const others = books.length - 1;
+    const text =
+      `📚 New in the library: *${books[0].title}*${others ? ` and ${others} other book${others > 1 ? 's' : ''}` : ''}, ` +
+      `added by ${who(owner)}.\n\nReply *alerts off* to stop these.`;
+    const link =
+      books.length === 1 ? appLink(`/?q=${encodeURIComponent(books[0].title)}`, 'See the book') : appLink('/', 'See new books');
+    const at = clock();
+    let sent = 0;
+    for (const m of store.membersForBookAlerts(ownerId)) {
+      if (store.isBlocked(m.id, ownerId) || store.isBlocked(ownerId, m.id)) continue;
+      if (m.book_alert_at && at - new Date(m.book_alert_at) < NEWS_GAP_MS) continue;
+      if ((await notifier.notify(m.id, { text, link, optional: true })) === 'sent') {
+        store.markBooksSeen(m.id, { alertedAt: at.toISOString() });
+        sent++;
+      }
+    }
+    return sent;
+  }
+
+  /** Sends any batched alerts now (tests, and shutdown). */
+  async function flushNews() {
+    let sent = 0;
+    for (const id of [...news.keys()]) sent += await sendNews(id);
+    return sent;
+  }
+
+  /** When a member messages the bot: one summary of books added since they last looked. */
+  async function newsSummary(member, reply) {
+    if (member.status !== 'active' || !member.book_alerts) return false;
+    const at = clock();
+    if (!member.books_seen_at) {
+      store.markBooksSeen(member.id);
+      return false;
+    }
+    if (member.book_alert_at && at - new Date(member.book_alert_at) < NEWS_GAP_MS) return false;
+    const books = store
+      .booksAddedSince(member.books_seen_at, member.id)
+      .filter((b) => !store.isBlocked(member.id, b.owner_id) && !store.isBlocked(b.owner_id, member.id));
+    if (!books.length) return false;
+    store.markBooksSeen(member.id, { alertedAt: at.toISOString() });
+    const titles = books.slice(0, 2).map((b) => `*${b.title}*`);
+    await reply(
+      `📚 While you were away, neighbours added ${books.length} book${books.length > 1 ? 's' : ''}: ${listTitles(titles, books.length)}.`,
+      { link: appLink('/', 'See new books') },
+    );
+    return true;
+  }
+
+  // ---------- joining: admins approve everyone ----------
+
+  const admins = () =>
+    (settings.adminPhones || []).map((p) => store.memberByPhone(p)).filter((m) => m && m.status === 'active');
+
+  /**
+   * Asks the admins (once) to approve a member who has finished setup. If no admin has joined yet,
+   * there's nobody to ask, so the member is let straight in.
+   * @returns {Promise<'asked'|'approved'>}
+   */
+  async function askApproval(member) {
+    member = store.memberById(member.id);
+    if (member.status !== 'pending') return 'approved';
+    if (member.approval_asked_at) return 'asked';
+    const list = admins();
+    if (!list.length) {
+      store.setMemberStatus(member.id, 'active');
+      console.warn('No admin has joined yet, so a new member was let in without approval (set ADMIN_PHONES and join).');
+      return 'approved';
+    }
+    store.markApprovalAsked(member.id);
+    const referrer = member.referred_by && store.memberById(member.referred_by);
+    const how = referrer ? `invited by *${who(referrer)}*` : 'using the join code';
+    for (const admin of list) {
+      await notifier.notify(admin.id, {
+        text:
+          `🆕 *${who(member)}* wants to join, ${how}.\n` +
+          `Reply *approve ${member.id}* or *decline ${member.id}*, or use the Me tab in the app.`,
+        buttons: [
+          { id: `approve:${member.id}`, title: 'Approve' },
+          { id: `decline:${member.id}`, title: 'Decline' },
+        ],
+      });
+    }
+    return 'asked';
+  }
+
+  async function approveMember(id) {
+    const m = store.memberById(Number(id));
+    if (!m) throw new LibraryError(`There's no one with number #${id}. They may have been declined already.`);
+    if (m.status === 'active') return { member: m, already: true };
+    const me = store.setMemberStatus(m.id, 'active');
+    await notifier.notify(me.id, {
+      text:
+        `🎉 You're in, ${me.name}! Welcome to ${settings.communityName}.\n` +
+        'You can now see who has each book, add yours and borrow. Send *login* any time for a sign-in button.',
+      link: appLink('/', 'Open MohallaReads'),
+    });
+    const referrer = me.referred_by && store.memberById(me.referred_by);
+    if (referrer) {
+      await notifier.notify(referrer.id, { text: `👋 ${who(me)}, whom you invited, has joined ${settings.communityName}.`, optional: true });
+    }
+    return { member: me };
+  }
+
+  async function declineMember(id) {
+    const m = store.memberById(Number(id));
+    if (!m) throw new LibraryError(`There's no one with number #${id}. They may have been declined already.`);
+    if (m.status !== 'pending') throw new LibraryError(`${m.name} is already a member. To remove them, send *remove member ${m.id}*.`);
+    await notifier.notify(m.id, {
+      text: "Sorry, your request to join wasn't approved. If you think this is a mistake, talk to the neighbour who invited you.",
+      optional: true,
+    });
+    store.deleteMember(m.id);
+    return m;
   }
 
   function addWish(member, query) {
@@ -248,6 +397,11 @@ export function createLibrary({ store, notifier, settings, clock = () => new Dat
     runReminders,
     deleteAccount,
     getRequest,
+    flushNews,
+    newsSummary,
+    askApproval,
+    approveMember,
+    declineMember,
     otherParty,
     fmtDate,
   };

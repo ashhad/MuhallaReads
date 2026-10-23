@@ -88,7 +88,7 @@ test('searching, adding, photos and old buttons all point to the app', async () 
 
 test('help, admin commands and account deletion', async () => {
   const w = await twoMembers();
-  assert.match(await w.say(AYESHA, 'help'), /Admin: `stats`/); // Ayesha is an admin in the test settings
+  assert.match(await w.say(AYESHA, 'help'), /Admin: `pending`.*`stats`/); // Ayesha is an admin in the test settings
   assert.doesNotMatch(await w.say(BILAL, 'help'), /Admin/);
   assert.doesNotMatch(await w.say(BILAL, 'help'), /photo of your whole shelf/); // photo scanning is off here
   assert.match(await w.say(AYESHA, 'stats'), /2 members/);
@@ -237,4 +237,109 @@ test('help and photo replies mention shelf photos when photo scanning is on', as
   await w.join(AYESHA, 'Ayesha');
   assert.match(await w.say(AYESHA, 'help'), /one photo of your whole shelf/);
   assert.match(await w.say(AYESHA, '', { other: 'image' }), /Add › Shelf photo/);
+});
+
+// ---------- joining by invite, approved by an admin ----------
+
+/** Ayesha (admin) and Bilal are members; Riya is a new phone. */
+const RIYA = '919800000004';
+
+test('an invite link brings a newcomer in as "waiting"; the admin is asked, with who invited them', async () => {
+  const w = await twoMembers({ settings: { joinCode: '159357' } });
+  const invite = await w.say(BILAL, 'invite');
+  const code = /\?join=([a-z0-9]+)/.exec(invite)[1];
+  assert.match(invite, /an admin checks and approves them/);
+
+  w.transport.clear();
+  assert.match(await w.say(RIYA, `join ${code}`, { profileName: 'Riya' }), /Welcome, Riya/);
+  await w.say(RIYA, 'skip');
+  const done = await w.say(RIYA, 'Bani Park, Jaipur');
+  assert.match(done, /once an admin approves you/);
+  const riya = w.member(RIYA);
+  assert.equal(riya.status, 'pending');
+  assert.equal(riya.referred_by, w.member(BILAL).id);
+
+  const [ask] = w.transport.to(AYESHA);
+  assert.match(ask.text, /\*Riya \(Bani Park, Jaipur\)\* wants to join, invited by \*Bilal \(Sunrise Apartments, Saket\)\*/);
+  assert.deepEqual(ask.buttons.map((b) => b.id), [`approve:${riya.id}`, `decline:${riya.id}`]);
+  assert.doesNotMatch(ask.text, /919800000004/); // never a phone number
+  assert.equal(w.transport.to(BILAL).length, 0); // only admins are asked
+
+  // While waiting, the bot says so, and invites aren't available yet.
+  assert.match(await w.say(RIYA, 'dune'), /waiting for an admin to approve you/);
+  assert.match(await w.say(RIYA, 'invite'), /once an admin has approved you/);
+
+  // The admin taps Approve.
+  w.transport.clear();
+  assert.match(await w.say(AYESHA, '', { payload: `approve:${riya.id}` }), /Approved Riya \(Bani Park, Jaipur\)/);
+  assert.equal(w.member(RIYA).status, 'active');
+  assert.match(w.transport.to(RIYA)[0].text, /You're in, Riya/);
+  assert.match(w.transport.to(BILAL)[0].text, /Riya \(Bani Park, Jaipur\), whom you invited, has joined/);
+});
+
+test('the join code works too, also with approval; a wrong code is turned away', async () => {
+  const w = await twoMembers({ settings: { joinCode: '159357' } });
+  assert.match(await w.say(RIYA, 'join 000000'), /open the invite link a neighbour sent you/);
+  assert.equal(w.member(RIYA), undefined);
+
+  await w.say(RIYA, 'join 159357', { profileName: 'Riya' });
+  await w.say(RIYA, 'skip');
+  w.transport.clear();
+  await w.say(RIYA, 'Bani Park');
+  assert.match(w.transport.to(AYESHA)[0].text, /wants to join, using the join code/);
+  assert.match(await w.say(AYESHA, 'pending'), /#\d+ Riya \(Bani Park\), join code/);
+
+  w.transport.clear();
+  assert.match(await w.say(AYESHA, `decline ${w.member(RIYA).id}`), /Declined Riya/);
+  assert.equal(w.member(RIYA), undefined);
+  assert.match(w.transport.to(RIYA)[0].text, /wasn't approved/);
+  assert.match(await w.say(BILAL, `approve 5`), /happen in the app/); // not an admin
+});
+
+test('admins are let in straight away, and so is everyone if no admin has joined yet', async () => {
+  const w = makeWorld({ settings: { adminPhones: [] } });
+  await w.say(RIYA, 'hi', { profileName: 'Riya' });
+  await w.say(RIYA, 'skip');
+  assert.match(await w.say(RIYA, 'Bani Park'), /All set!/);
+  assert.equal(w.member(RIYA).status, 'active');
+});
+
+// ---------- new-book alerts ----------
+
+test('new books are announced once, batched per person, and members can opt out', async () => {
+  const w = await twoMembers();
+  await w.join(CHAND, 'Chand');
+  w.transport.clear();
+
+  await w.library.addBooks(w.member(AYESHA), [{ title: 'Dune' }, { title: 'Sapiens' }]);
+  await w.library.addBooks(w.member(AYESHA), [{ title: 'Ikigai' }]); // a few minutes later: same message
+  assert.equal(await w.library.flushNews(), 2);
+  const [toBilal] = w.transport.to(BILAL);
+  assert.match(toBilal.text, /New in the library: \*Dune\* and 2 other books, added by Ayesha \(Green Park Tower, Saket\)/);
+  assert.equal(toBilal.link.label, 'See new books');
+  assert.equal(w.transport.to(AYESHA).length, 0); // not to the person who added them
+
+  // One book: just its name. Chand opted out; Bilal was told recently, so this waits for his summary.
+  assert.match(await w.say(CHAND, 'alerts off'), /no more new-book messages/);
+  w.transport.clear();
+  await w.library.addBooks(w.member(AYESHA), [{ title: 'Gitanjali' }]);
+  assert.equal(await w.library.flushNews(), 0);
+
+  // Seven hours later, Bilal messages the bot and gets one "while you were away".
+  w.time.now += 7 * 3600_000;
+  assert.match(await w.say(BILAL, 'hi'), /While you were away, neighbours added 1 book: \*Gitanjali\*.*\n<See new books:/s);
+  assert.doesNotMatch(await w.say(BILAL, 'hi'), /While you were away/); // only once
+});
+
+test('a single new book is announced by name; waiting members get no alerts', async () => {
+  const w = await twoMembers();
+  await w.say(RIYA, 'hi', { profileName: 'Riya' });
+  await w.say(RIYA, 'skip');
+  await w.say(RIYA, 'Bani Park'); // waiting for approval
+  w.transport.clear();
+  await w.library.addBooks(w.member(AYESHA), [{ title: 'Dune', author: 'Frank Herbert' }]);
+  await w.library.flushNews();
+  assert.match(w.transport.to(BILAL)[0].text, /New in the library: \*Dune\*, added by Ayesha/);
+  assert.equal(w.transport.to(BILAL)[0].link.label, 'See the book');
+  assert.equal(w.transport.to(RIYA).length, 0);
 });

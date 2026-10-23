@@ -12,8 +12,8 @@ export function createNotifier({ store, transport, settings, clock = () => new D
   const windowOpen = (member) =>
     Boolean(member.last_inbound_at) && clock() - new Date(member.last_inbound_at) < WINDOW_MS;
 
-  async function sendNow(member, { text, link }) {
-    await transport.send(member.phone, { text, link });
+  async function sendNow(member, { text, link, buttons }) {
+    await transport.send(member.phone, { text, link, buttons });
     store.bumpUsage('service');
   }
 
@@ -22,6 +22,8 @@ export function createNotifier({ store, transport, settings, clock = () => new D
    * @param {object} n
    * @param {string} n.text full message
    * @param {{url: string, label: string}} [n.link] button that opens the web app
+   * @param {{id: string, title: string}[]} [n.buttons] reply buttons (only when sent straight away; the
+   *   text should also say what to type, since queued messages are delivered without them)
    * @param {number} [n.requestId]
    * @param {{name: string, params: string[], url?: string}} [n.template] nudge when the window is closed
    * @param {boolean} [n.optional] only send if it's free right now; otherwise drop it
@@ -41,7 +43,8 @@ export function createNotifier({ store, transport, settings, clock = () => new D
     }
     if (n.optional) return 'dropped';
 
-    const alreadyNudged = store.pendingInbox(member.id).length > 0;
+    // One paid template per absence: none if one was already sent since they last messaged the bot.
+    const alreadyNudged = Boolean(member.nudged_at) && (!member.last_inbound_at || member.nudged_at > member.last_inbound_at);
     store.addInbox(member.id, { text: n.text, link: n.link, requestId: n.requestId });
     if (!transport || !n.template || alreadyNudged || !settings.templatesEnabled) return 'queued';
     if (store.usageFor().templates >= settings.monthlyTemplateLimit) {
@@ -51,6 +54,7 @@ export function createNotifier({ store, transport, settings, clock = () => new D
     try {
       await transport.sendTemplate(member.phone, n.template);
       store.bumpUsage('template');
+      store.markNudged(member.id, clock().toISOString());
       return 'template';
     } catch (err) {
       console.error(`WhatsApp template "${n.template.name}" failed:`, err.message);

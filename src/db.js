@@ -13,7 +13,18 @@ CREATE TABLE IF NOT EXISTS members (
   building        TEXT NOT NULL DEFAULT '',
   locality        TEXT NOT NULL DEFAULT '',
   last_inbound_at TEXT,
-  created_at      TEXT NOT NULL
+  created_at      TEXT NOT NULL,
+  -- Joining: everyone who joins by invite link or join code waits for an admin to approve them.
+  status          TEXT NOT NULL DEFAULT 'active',  -- 'pending' until approved
+  joined_via      TEXT,                            -- 'referral' | 'code' | 'open' (NULL: added by an admin)
+  referred_by     INTEGER REFERENCES members(id) ON DELETE SET NULL,
+  ref_code        TEXT,                            -- this member's personal invite code
+  approval_asked_at TEXT,                          -- when admins were asked to approve
+  -- New-book alerts on WhatsApp (members can turn them off).
+  book_alerts     INTEGER NOT NULL DEFAULT 1,
+  books_seen_at   TEXT,                            -- told about / saw books added up to this time
+  book_alert_at   TEXT,                            -- last new-book message, to keep them rare
+  nudged_at       TEXT                             -- last paid template, for "one per absence"
 );
 
 CREATE TABLE IF NOT EXISTS sessions (
@@ -140,6 +151,22 @@ function migrate(db) {
   }
   const inboxCols = new Set(db.prepare('PRAGMA table_info(inbox)').all().map((c) => c.name));
   if (!inboxCols.has('link')) db.exec('ALTER TABLE inbox ADD COLUMN link TEXT');
+  const added = {
+    status: "TEXT NOT NULL DEFAULT 'active'",
+    joined_via: 'TEXT',
+    referred_by: 'INTEGER REFERENCES members(id) ON DELETE SET NULL',
+    ref_code: 'TEXT',
+    approval_asked_at: 'TEXT',
+    book_alerts: 'INTEGER NOT NULL DEFAULT 1',
+    books_seen_at: 'TEXT',
+    book_alert_at: 'TEXT',
+    nudged_at: 'TEXT',
+  };
+  const cols = new Set(db.prepare('PRAGMA table_info(members)').all().map((c) => c.name));
+  for (const [col, type] of Object.entries(added)) {
+    if (!cols.has(col)) db.exec(`ALTER TABLE members ADD COLUMN ${col} ${type}`);
+  }
+  db.exec('CREATE UNIQUE INDEX IF NOT EXISTS members_ref_code ON members(ref_code)');
   const usageCols = new Set(db.prepare('PRAGMA table_info(usage)').all().map((c) => c.name));
   if (!usageCols.has('photos')) db.exec('ALTER TABLE usage ADD COLUMN photos INTEGER NOT NULL DEFAULT 0');
   if (!usageCols.has('photo_cost')) db.exec('ALTER TABLE usage ADD COLUMN photo_cost REAL NOT NULL DEFAULT 0');
@@ -197,8 +224,79 @@ export class Store {
     return this.q('SELECT * FROM members WHERE phone = ?').get(phone);
   }
 
-  createMember({ name, phone }) {
-    return this.q('INSERT INTO members (name, phone, created_at) VALUES (?, ?, ?) RETURNING *').get(name, phone, now());
+  createMember({ name, phone, status = 'active', joinedVia = null, referredBy = null }) {
+    return this.q(
+      `INSERT INTO members (name, phone, created_at, status, joined_via, referred_by, books_seen_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?) RETURNING *`,
+    ).get(name, phone, now(), status, joinedVia, referredBy, now());
+  }
+
+  setMemberStatus(id, status) {
+    return this.q('UPDATE members SET status = ?, books_seen_at = COALESCE(books_seen_at, ?) WHERE id = ? RETURNING *').get(status, now(), id);
+  }
+
+  markApprovalAsked(id) {
+    this.q('UPDATE members SET approval_asked_at = ? WHERE id = ?').run(now(), id);
+  }
+
+  /** Members waiting for approval who've finished setup, with who referred them. */
+  pendingMembers() {
+    return this.q(
+      `SELECT m.id, m.name, m.building, m.locality, m.joined_via, m.created_at,
+              r.name AS referrer_name, r.building AS referrer_building, r.locality AS referrer_locality
+       FROM members m LEFT JOIN members r ON r.id = m.referred_by
+       WHERE m.status = 'pending' AND (m.building != '' OR m.locality != '')
+       ORDER BY m.id`,
+    ).all();
+  }
+
+  /** This member's personal invite code, created the first time it's needed. */
+  refCodeFor(id) {
+    const m = this.memberById(id);
+    if (m?.ref_code) return m.ref_code;
+    const alphabet = 'abcdefghjkmnpqrstuvwxyz23456789'; // no look-alikes (l/1, o/0)
+    for (;;) {
+      const code = Array.from(crypto.randomBytes(7), (b) => alphabet[b % alphabet.length]).join('');
+      try {
+        this.q('UPDATE members SET ref_code = ? WHERE id = ?').run(code, id);
+        return code;
+      } catch {
+        // taken: try another
+      }
+    }
+  }
+
+  /** The approved member whose invite code this is. */
+  memberByRefCode(code) {
+    return this.q("SELECT * FROM members WHERE ref_code = ? AND status = 'active'").get(String(code || '').trim().toLowerCase());
+  }
+
+  // ---------- new-book alerts ----------
+
+  setBookAlerts(id, on) {
+    this.q('UPDATE members SET book_alerts = ? WHERE id = ?').run(on ? 1 : 0, id);
+  }
+
+  /** Approved members who want new-book alerts, except `exceptId`. */
+  membersForBookAlerts(exceptId) {
+    return this.q("SELECT * FROM members WHERE status = 'active' AND book_alerts = 1 AND id != ?").all(exceptId);
+  }
+
+  /** Books added by others since `since`, newest first. */
+  booksAddedSince(since, exceptOwnerId) {
+    return this.q(
+      `SELECT b.id, b.title, b.owner_id FROM books b JOIN members m ON m.id = b.owner_id
+       WHERE b.created_at > ? AND b.owner_id != ? AND m.status = 'active' ORDER BY b.id DESC`,
+    ).all(since, exceptOwnerId);
+  }
+
+  /**
+   * They've now seen (or been told about) every book added so far. `alertedAt` (the app's clock) also
+   * records a new-book message, for spacing them out.
+   */
+  markBooksSeen(id, { alertedAt } = {}) {
+    if (alertedAt) this.q('UPDATE members SET books_seen_at = ?, book_alert_at = ? WHERE id = ?').run(now(), alertedAt, id);
+    else this.q('UPDATE members SET books_seen_at = ? WHERE id = ?').run(now(), id);
   }
 
   setPlace(id, { building, locality }) {
@@ -213,12 +311,19 @@ export class Store {
     this.q('DELETE FROM members WHERE id = ?').run(id);
   }
 
+  markNudged(id, at = now()) {
+    this.q('UPDATE members SET nudged_at = ? WHERE id = ?').run(at, id);
+  }
+
   touchInbound(id, at = now()) {
     this.q('UPDATE members SET last_inbound_at = ? WHERE id = ?').run(at, id);
   }
 
   listMembers() {
-    return this.q('SELECT id, name, created_at FROM members ORDER BY name COLLATE NOCASE').all();
+    return this.q(
+      `SELECT m.id, m.name, m.status, m.created_at, r.name AS referrer_name
+       FROM members m LEFT JOIN members r ON r.id = m.referred_by ORDER BY m.name COLLATE NOCASE`,
+    ).all();
   }
 
   // ---------- web sign-in ----------
@@ -531,7 +636,8 @@ export class Store {
 
   stats() {
     return this.q(
-      `SELECT (SELECT COUNT(*) FROM books) AS books, (SELECT COUNT(*) FROM members) AS members,
+      `SELECT (SELECT COUNT(*) FROM books) AS books, (SELECT COUNT(*) FROM members WHERE status = 'active') AS members,
+              (SELECT COUNT(*) FROM members WHERE status = 'pending') AS pending,
               (SELECT COUNT(*) FROM requests WHERE status = 'accepted') AS loans`,
     ).get();
   }

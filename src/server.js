@@ -81,16 +81,28 @@ export function createApp({ store, deps = {}, settings = config } = {}) {
   api.use(auth);
   app.use('/api', api);
 
-  const isAdmin = (m) => Boolean(settings.adminPhones?.includes(m.phone));
+  const isAdmin = (m) => Boolean(settings.adminPhones?.includes(m.phone)) && m.status === 'active';
+  const pendingView = (p) => ({
+    id: p.id,
+    name: p.name,
+    place: placeOf(p),
+    invitedBy: p.referrer_name ? `${p.referrer_name}${placeOf({ building: p.referrer_building, locality: p.referrer_locality }) ? ` (${placeOf({ building: p.referrer_building, locality: p.referrer_locality })})` : ''}` : null,
+    since: p.created_at,
+  });
   const publicMe = (m) => ({
     id: m.id,
     name: m.name,
     building: m.building,
     locality: m.locality,
     place: placeOf(m),
-    // Admins see this month's running costs on their Me tab.
+    status: m.status, // 'pending' until an admin approves them
+    bookAlerts: Boolean(m.book_alerts),
+    // Their personal invite code (the app builds the link), once they're in.
+    invite: m.status === 'active' ? store.refCodeFor(m.id) : null,
+    // Admins see this month's running costs and who's waiting on their Me tab.
     ...(isAdmin(m) && {
       usage: { photos: photos.usage(), templates: store.usageFor().templates, templateLimit: settings.monthlyTemplateLimit },
+      pending: store.pendingMembers().map(pendingView),
     }),
   });
 
@@ -104,6 +116,7 @@ export function createApp({ store, deps = {}, settings = config } = {}) {
       if (!name) throw new HttpError(400, 'Please use a name of 2–40 characters.');
       store.renameMember(req.member.id, name);
     }
+    if ('bookAlerts' in b) store.setBookAlerts(req.member.id, Boolean(b.bookAlerts));
     if ('building' in b || 'locality' in b) {
       const place = {
         building: 'building' in b ? cleanPlace(b.building) : req.member.building,
@@ -123,6 +136,25 @@ export function createApp({ store, deps = {}, settings = config } = {}) {
     next();
   };
 
+  // Until an admin approves them, newcomers can browse which books exist, nothing more.
+  const requireApproved = (req, _res, next) => {
+    if (req.member.status !== 'active') {
+      throw new HttpError(403, "You can do this once an admin has approved you. You'll get a message on WhatsApp.");
+    }
+    next();
+  };
+  const requireAdmin = (req, _res, next) => {
+    if (!isAdmin(req.member)) throw new HttpError(403, 'Only admins can do this.');
+    next();
+  };
+
+  api.post('/admin/members/:id/:action', requireAdmin, async (req, res) => {
+    const { action, id } = req.params;
+    if (action === 'approve') return res.json({ member: pendingView((await library.approveMember(id)).member) });
+    if (action === 'decline') return res.json({ declined: (await library.declineMember(id)).id });
+    throw new HttpError(404, 'Not found.');
+  });
+
   api.delete('/me', (req, res) => {
     library.deleteAccount(req.member);
     res.json({ ok: true });
@@ -134,7 +166,15 @@ export function createApp({ store, deps = {}, settings = config } = {}) {
   });
 
   api.get('/books', (req, res) => {
-    res.json({ results: store.search(String(req.query.q || ''), { limit: 200 }) });
+    const q = String(req.query.q || '');
+    let results = store.search(q, { limit: 200 });
+    // Newcomers see the titles, but not who owns them, until they're approved.
+    if (req.member.status !== 'active') {
+      results = results.map((g) => ({ ...g, copies: g.copies.map((c) => ({ bookId: c.bookId, status: c.status, owner: null })) }));
+    } else if (!q.trim()) {
+      store.markBooksSeen(req.member.id); // they've seen what's new; no "while you were away" for these
+    }
+    res.json({ results });
   });
 
   api.get('/my-books', (req, res) => res.json({ books: store.booksOf(req.member.id) }));
@@ -173,7 +213,7 @@ export function createApp({ store, deps = {}, settings = config } = {}) {
     res.json({ info });
   });
 
-  api.post('/books', requirePlace, async (req, res) => {
+  api.post('/books', requireApproved, requirePlace, async (req, res) => {
     const books = (Array.isArray(req.body?.books) ? req.body.books : [])
       .slice(0, 200)
       .map((b) => ({
@@ -188,7 +228,7 @@ export function createApp({ store, deps = {}, settings = config } = {}) {
     res.json({ added, skipped: skipped.length });
   });
 
-  api.post('/scan-photo', async (req, res) => {
+  api.post('/scan-photo', requireApproved, async (req, res) => {
     const img = parseDataUrl(req.body?.image);
     if (!img) throw new HttpError(400, 'No photo received.');
     let found;
@@ -254,7 +294,7 @@ export function createApp({ store, deps = {}, settings = config } = {}) {
     res.json({ requests: store.requestsFor(req.member.id).map((r) => viewRequest(r, req.member)) });
   });
 
-  api.post('/requests', requirePlace, async (req, res) => {
+  api.post('/requests', requireApproved, requirePlace, async (req, res) => {
     const r = await library.want(req.member, req.body?.bookId, req.body?.note);
     res.json({ request: viewRequest(r, req.member) });
   });
@@ -290,7 +330,7 @@ export function createApp({ store, deps = {}, settings = config } = {}) {
   // ---------- wishlist ----------
 
   api.get('/wishes', (req, res) => res.json({ wishes: store.wishesOf(req.member.id) }));
-  api.post('/wishes', (req, res) => res.json({ wish: library.addWish(req.member, req.body?.query) }));
+  api.post('/wishes', requireApproved, (req, res) => res.json({ wish: library.addWish(req.member, req.body?.query) }));
   api.delete('/wishes/:id', (req, res) => {
     if (!store.removeWish(req.member.id, Number(req.params.id))) throw new HttpError(404, 'Not found.');
     res.json({ ok: true });

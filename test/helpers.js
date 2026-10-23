@@ -76,11 +76,14 @@ export function makeWorld({ settings = {} } = {}) {
     store.touchInbound(m.id, new Date(time.now - 2 * 86400_000).toISOString());
   }
 
-  /** Joins as a new member and answers the two setup questions. */
+  /** Joins as a new member, answers the two setup questions, and is approved (as an admin would). */
   async function join(phone, name, building = 'Green Park Tower', locality = 'Saket') {
-    await say(phone, 'hi', { profileName: name });
+    await say(phone, s.joinCode ? `join ${s.joinCode}` : 'hi', { profileName: name });
     await say(phone, building);
-    return say(phone, locality);
+    const reply = await say(phone, locality);
+    const m = store.memberByPhone(phone);
+    if (m.status === 'pending') store.setMemberStatus(m.id, 'active');
+    return reply;
   }
 
   const member = (phone) => store.memberByPhone(phone);
