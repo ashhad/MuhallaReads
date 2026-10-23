@@ -51,7 +51,7 @@ of the library:
 **Keys: give each one as little power as possible.**
 
 - [ ] **Google Books key**: Google Cloud Console → APIs & Services → Credentials → the key →
-  *API restrictions*: only "Books API"; *Application restrictions*: IP address `140.245.194.62`.
+  *API restrictions*: only "Books API"; *Application restrictions*: IP address: your VM's public IP.
   Then a leaked key is useless elsewhere.
 - [ ] **Anthropic key**: Console → Limits → a monthly spend limit (e.g. $4). Use a key made only
   for this server, so you can revoke it without affecting anything else.

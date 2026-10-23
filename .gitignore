@@ -3,3 +3,18 @@ data/
 .env
 *.db
 *.db-*
+
+# Secrets and keys must never be committed (they belong in /etc/muhallareads/muhallareads.env)
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+id_rsa*
+id_ed25519*
+# Databases and backups hold members' phone numbers
+*.sqlite
+*.sqlite3
+*.sqlite-*
+backups/
