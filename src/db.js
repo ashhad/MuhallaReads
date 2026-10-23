@@ -168,6 +168,11 @@ function migrate(db) {
     if (!cols.has(col)) db.exec(`ALTER TABLE members ADD COLUMN ${col} ${type}`);
   }
   db.exec('CREATE UNIQUE INDEX IF NOT EXISTS members_ref_code ON members(ref_code)');
+  // Titles and authors saved before plainLine existed: clean any that carry formatting or line breaks.
+  const fix = db.prepare('UPDATE books SET title = ?, author = ? WHERE id = ?');
+  for (const b of db.prepare("SELECT id, title, author FROM books WHERE title GLOB '*[*_~`]*' OR author GLOB '*[*_~`]*' OR title LIKE '%' || char(10) || '%' OR author LIKE '%' || char(10) || '%'").all()) {
+    fix.run(plainLine(b.title, 300) || 'Untitled', plainLine(b.author, 200), b.id);
+  }
   const sessionCols = new Set(db.prepare('PRAGMA table_info(sessions)').all().map((c) => c.name));
   if (!sessionCols.has('last_used_at')) db.exec('ALTER TABLE sessions ADD COLUMN last_used_at TEXT');
   const usageCols = new Set(db.prepare('PRAGMA table_info(usage)').all().map((c) => c.name));
@@ -193,9 +198,26 @@ export const normText = (s) =>
     .replace(/[^\p{L}\p{M}\p{N}]+/gu, ' ')
     .trim();
 
-/** True if every word of `query` appears in the book's title or author. */
+/**
+ * One line of plain text: no WhatsApp formatting (*bold* _italic_ ~strike~ `code`), no line breaks or
+ * control characters. Book titles and authors are stored like this, so one can never be dressed up as
+ * a message from the library itself ("🔒 *Security notice* … verify at <link>") when it's quoted in a
+ * WhatsApp notification to other members.
+ */
+export const plainLine = (s, max = 300) =>
+  String(s ?? '')
+    .replace(/[*_~`]/g, '')
+    .replace(/[\u0000-\u001f\u007f\u2028\u2029]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, max);
+
+/** The words of a search, normalised once (then matched against many books). */
+export const queryWords = (query) => normText(String(query || '').slice(0, 200)).split(' ').filter(Boolean);
+
+/** True if every word of `query` (a string, or words from queryWords) appears in the book's title or author. */
 export function matchesQuery(book, query) {
-  const words = normText(query).split(' ').filter(Boolean);
+  const words = Array.isArray(query) ? query : queryWords(query);
   const hay = normText(book.title) + ' ' + normText(book.author);
   return words.length > 0 && words.every((w) => hay.includes(w));
 }
@@ -396,9 +418,9 @@ export class Store {
     const added = [];
     const skipped = [];
     for (const b of books) {
-      const title = String(b.title || '').trim();
+      const title = plainLine(b.title, 300);
       if (!title) continue;
-      const author = String(b.author || '').trim();
+      const author = plainLine(b.author, 200);
       const key = normText(title) + '|' + normText(author);
       if ((b.isbn && haveIsbn.has(b.isbn)) || haveTitle.has(key)) {
         skipped.push(b);
@@ -445,7 +467,9 @@ export class Store {
    * Copies of the same book are grouped. Owners are identified by display name only.
    */
   search(query, { limit = 100 } = {}) {
-    const isbnQuery = String(query || '').replace(/[^0-9Xx]/g, '');
+    query = String(query || '').slice(0, 200); // a search is a few words; longer text just costs time
+    const isbnQuery = query.replace(/[^0-9Xx]/g, '');
+    const words = queryWords(query);
     const rows = this.q(
       `SELECT b.*, m.name AS owner_name, m.building AS owner_building, m.locality AS owner_locality
        FROM books b JOIN members m ON m.id = b.owner_id
@@ -453,9 +477,9 @@ export class Store {
     ).all();
 
     const matches = rows.filter((r) => {
-      if (!normText(query)) return true;
+      if (!words.length) return true;
       if (isbnQuery.length >= 10 && r.isbn && r.isbn.includes(isbnQuery)) return true;
-      return matchesQuery(r, query);
+      return matchesQuery(r, words);
     });
 
     const groups = new Map();
@@ -608,9 +632,9 @@ export class Store {
 
   // ---------- usage (WhatsApp cost tracking) ----------
 
-  bumpUsage(kind, month = now().slice(0, 7)) {
+  bumpUsage(kind, month = now().slice(0, 7), by = 1) {
     const col = kind === 'template' ? 'templates' : 'service';
-    this.q(`INSERT INTO usage (month, ${col}) VALUES (?, 1) ON CONFLICT(month) DO UPDATE SET ${col} = ${col} + 1`).run(month);
+    this.q(`INSERT INTO usage (month, ${col}) VALUES (?, MAX(?, 0)) ON CONFLICT(month) DO UPDATE SET ${col} = MAX(${col} + ?, 0)`).run(month, by, by);
   }
 
   usageFor(month = now().slice(0, 7)) {

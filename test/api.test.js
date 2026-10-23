@@ -200,7 +200,9 @@ test('newcomers waiting for approval can browse titles only; an admin approves t
   // Ayesha is an admin: she sees Riya waiting and approves her.
   const admin = await signIn(AYESHA, 'Ayesha');
   const pending = (await call('/api/me', { token: admin })).data.member.pending;
-  assert.deepEqual(pending.find((p) => p.id === newbie.id), { id: newbie.id, name: 'Riya', place: 'Bani Park', invitedBy: null, since: newbie.created_at });
+  const listed = pending.find((p) => p.id === newbie.id);
+  assert.deepEqual({ ...listed, tag: undefined }, { id: newbie.id, tag: undefined, name: 'Riya', place: 'Bani Park', invitedBy: null, since: newbie.created_at });
+  assert.equal((await call(`/api/admin/members/${newbie.id}/approve`, { method: 'POST', token: admin, body: { tag: '0000' } })).status, 400); // stale button
   assert.equal((await call(`/api/admin/members/${newbie.id}/approve`, { method: 'POST', token: owner })).status, 403); // not an admin
   assert.equal((await call(`/api/admin/members/${newbie.id}/approve`, { method: 'POST', token: admin })).status, 200);
 

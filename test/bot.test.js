@@ -138,7 +138,7 @@ test('a request notifies the owner with a button to the app, never a phone numbe
   w.transport.clear();
   await w.library.sendMessage(w.member(AYESHA), r.id, "I'm at Block C, come by at 6");
   const [chat] = w.transport.to(BILAL);
-  assert.match(chat.text, /Ayesha\* about _Dune_:\nI'm at Block C/);
+  assert.match(chat.text, /Ayesha\* about _Dune_:\n> I'm at Block C/);
   assert.equal(chat.link.url, `${SITE}/?request=${r.id}`);
   assert.doesNotMatch(chat.text, /9198000/);
 
@@ -261,7 +261,8 @@ test('an invite link brings a newcomer in as "waiting"; the admin is asked, with
 
   const [ask] = w.transport.to(AYESHA);
   assert.match(ask.text, /\*Riya \(Bani Park, Jaipur\)\* wants to join, invited by \*Bilal \(Sunrise Apartments, Saket\)\*/);
-  assert.deepEqual(ask.buttons.map((b) => b.id), [`approve:${riya.id}`, `decline:${riya.id}`]);
+  const tag = /approve (\d+-[0-9a-f]{4})/.exec(ask.text)[1];
+  assert.deepEqual(ask.buttons.map((b) => b.id), [`approve:${tag}`, `decline:${tag}`]);
   assert.doesNotMatch(ask.text, /919800000004/); // never a phone number
   assert.equal(w.transport.to(BILAL).length, 0); // only admins are asked
 
@@ -271,7 +272,7 @@ test('an invite link brings a newcomer in as "waiting"; the admin is asked, with
 
   // The admin taps Approve.
   w.transport.clear();
-  assert.match(await w.say(AYESHA, '', { payload: `approve:${riya.id}` }), /Approved Riya \(Bani Park, Jaipur\)/);
+  assert.match(await w.say(AYESHA, '', { payload: `approve:${tag}` }), /Approved Riya \(Bani Park, Jaipur\)/);
   assert.equal(w.member(RIYA).status, 'active');
   assert.match(w.transport.to(RIYA)[0].text, /You're in, Riya/);
   assert.match(w.transport.to(BILAL)[0].text, /Riya \(Bani Park, Jaipur\), whom you invited, has joined/);
@@ -287,7 +288,7 @@ test('the join code works too, also with approval; a wrong code is turned away',
   w.transport.clear();
   await w.say(RIYA, 'Bani Park');
   assert.match(w.transport.to(AYESHA)[0].text, /wants to join, using the join code/);
-  assert.match(await w.say(AYESHA, 'pending'), /#\d+ Riya \(Bani Park\), join code/);
+  assert.match(await w.say(AYESHA, 'pending'), /Riya \(Bani Park\), join code: \*approve \d+-[0-9a-f]{4}\*/);
 
   w.transport.clear();
   assert.match(await w.say(AYESHA, `decline ${w.member(RIYA).id}`), /Declined Riya/);

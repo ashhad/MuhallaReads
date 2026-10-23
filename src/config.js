@@ -12,15 +12,24 @@ function num(name, fallback) {
   return fallback;
 }
 
+/** A 10-digit Indian-style number (or 0 + 10 digits) gets the default country code, as WhatsApp sends it. */
+function withCountryCode(d) {
+  const cc = digits(env.DEFAULT_COUNTRY_CODE || '91');
+  if (d.length === 10) return cc + d;
+  if (d.length === 11 && d.startsWith('0')) return cc + d.slice(1);
+  return d;
+}
+
 export const config = {
-  port: Number(env.PORT || 3000),
+  port: num('PORT', 3000),
   // Set to 127.0.0.1 when a reverse proxy (e.g. Caddy) sits in front, so the app isn't exposed directly.
   host: env.HOST || undefined,
   communityName: env.COMMUNITY_NAME || 'MuhallaReads',
   // Shared code people must send ("join <code>") before they can use the library. Empty = open.
   joinCode: (env.JOIN_CODE || '').trim(),
   // Members (by WhatsApp number, with country code) who can use admin commands.
-  adminPhones: (env.ADMIN_PHONES || '').split(',').map(digits).filter(Boolean),
+  // Written with or without the country code ("9812345678" or "919812345678").
+  adminPhones: (env.ADMIN_PHONES || '').split(',').map((p) => withCountryCode(digits(p))).filter(Boolean),
   // Added to 10-digit local numbers typed without a country code (admin script).
   defaultCountryCode: digits(env.DEFAULT_COUNTRY_CODE || '91'),
   dbPath: env.DB_PATH || path.join(env.DATA_DIR || 'data', 'muhallareads.db'),
@@ -29,11 +38,11 @@ export const config = {
   timeZone: env.TIME_ZONE || 'Asia/Kolkata',
 
   // Lending rules
-  loanDays: Number(env.LOAN_DAYS || 21),
-  maxPendingRequests: Number(env.MAX_PENDING_REQUESTS || 5),
+  loanDays: num('LOAN_DAYS', 21),
+  maxPendingRequests: num('MAX_PENDING_REQUESTS', 5),
 
   // WhatsApp cost control: paid "template" notifications per month (≈ ₹0.14 each in India).
-  monthlyTemplateLimit: Number(env.MONTHLY_TEMPLATE_LIMIT || 200),
+  monthlyTemplateLimit: num('MONTHLY_TEMPLATE_LIMIT', 200),
   // Set WHATSAPP_TEMPLATES=off until Meta has approved the templates in docs/whatsapp-templates.md.
   templatesEnabled: (env.WHATSAPP_TEMPLATES || 'on').toLowerCase() !== 'off',
 

@@ -20,6 +20,10 @@ sudo muhallareads-security-check
 | Malicious page content (XSS) | Everything shown is escaped; a strict Content-Security-Policy blocks injected scripts; the page can't be framed |
 | Flooding the server | Request size limits (256 KB; 8 MB for photos). Signed in: 60 requests and 30 book lookups a minute per member. Not signed in: 60 a minute per IP, and 5 failed sign-ins per 15 minutes per IP (successful sign-ins don't count, so neighbours sharing a network aren't locked out) |
 | Running up API bills | Photo scans: per-member daily limit, monthly photo and ₹ budget caps, admin alerts. WhatsApp: monthly template cap |
+| A member dressing a book title or message up as a notice from the library | Titles and authors are stored as plain text (no WhatsApp *bold*, no line breaks); chat and request notes are relayed as quotes |
+| Someone sending you *their* sign-in link, so your books and chats land in their account | The app asks "Switch account?" when a link is for a different account |
+| An old Approve button approving the wrong person | Approval buttons and commands carry a tag for that exact person (`approve 12-3fa9`) |
+| Approval being skipped | If admins are set but none is active, newcomers keep waiting; `ADMIN_PHONES` works with or without 91 |
 | Tracking members via images | Book covers are only accepted from Open Library / archive.org / Google |
 | A bug in the app being used to take over the server | The app runs as its own user, can only write to its data folder, has no privileges, can't see other processes, devices or kernel settings (systemd sandbox) |
 | Break-in over SSH | Key-only logins, plus a 6-digit code (`deploy/oracle/ssh-mfa.sh`); no passwords; root can't log in over SSH at all (you log in as `ubuntu` and use `sudo`); unused services such as rpcbind are off |

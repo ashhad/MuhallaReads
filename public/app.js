@@ -100,6 +100,16 @@ function sheet({ title, text = '', input = null, ok = 'OK' }) {
 
 // ---------- sign in ----------
 
+/** Who a session token belongs to, or null. */
+async function memberFor(token) {
+  try {
+    const res = await fetch('/api/me', { headers: { Authorization: `Bearer ${token}` } });
+    return res.ok ? (await res.json()).member : null;
+  } catch {
+    return null;
+  }
+}
+
 async function boot() {
   try {
     state.config = await api('/api/config');
@@ -136,11 +146,27 @@ async function boot() {
   // Sign-in links from the bot look like /#login=CODE
   const code = new URLSearchParams(location.hash.slice(1)).get('login');
   if (code) {
-    history.replaceState(null, '', location.pathname);
+    history.replaceState(null, '', location.pathname + location.search);
     try {
       const { token } = await api('/api/login', { method: 'POST', body: { code } });
-      state.token = token;
-      store.set('token', token);
+      // Someone could send you *their* sign-in link, so that what you add or say lands in their
+      // account. If this link is for a different account than the one you're in, ask first.
+      const [current, fresh] = await Promise.all([state.token && memberFor(state.token), memberFor(token)]);
+      let use = true;
+      if (current && fresh && current.id !== fresh.id) {
+        use =
+          (await sheet({
+            title: 'Switch account?',
+            text: `You're signed in as ${current.name}. This sign-in link is for ${fresh.name}.`,
+            ok: `Switch to ${fresh.name}`,
+          })) !== null;
+      }
+      if (use) {
+        state.token = token;
+        store.set('token', token);
+      } else {
+        fetch('/api/logout', { method: 'POST', headers: { Authorization: `Bearer ${token}` } }).catch(() => {});
+      }
     } catch (ex) {
       $('#signin .error').textContent = ex.message;
     }
@@ -1008,12 +1034,12 @@ function renderPending(list) {
       .map(
         (p) => `<div class="pending-row"><div><div>${esc(p.name)}${p.place ? ` <span class="place">· ${esc(p.place)}</span>` : ''}</div>
           <div class="muted small">${p.invitedBy ? `Invited by ${esc(p.invitedBy)}` : 'Used the join code'} · ${fmtDate(p.since)}</div></div>
-          <div class="row"><button class="btn small primary" data-approve="${p.id}">Approve</button>
-          <button class="btn small" data-decline="${p.id}" data-name="${esc(p.name)}">Decline</button></div></div>`,
+          <div class="row"><button class="btn small primary" data-approve="${p.id}" data-tag="${esc(p.tag)}">Approve</button>
+          <button class="btn small" data-decline="${p.id}" data-tag="${esc(p.tag)}" data-name="${esc(p.name)}">Decline</button></div></div>`,
       )
       .join('');
   box.querySelectorAll('[data-approve]').forEach((btn) =>
-    btn.addEventListener('click', () => decideMember(btn.dataset.approve, 'approve')),
+    btn.addEventListener('click', () => decideMember(btn.dataset.approve, 'approve', btn.dataset.tag)),
   );
   box.querySelectorAll('[data-decline]').forEach((btn) =>
     btn.addEventListener('click', async () => {
@@ -1022,14 +1048,14 @@ function renderPending(list) {
         text: 'They’ll be told their request wasn’t approved, and their details will be deleted.',
         ok: 'Decline',
       });
-      if (ok !== null) decideMember(btn.dataset.decline, 'decline');
+      if (ok !== null) decideMember(btn.dataset.decline, 'decline', btn.dataset.tag);
     }),
   );
 }
 
-async function decideMember(id, action) {
+async function decideMember(id, action, tag) {
   try {
-    await api(`/api/admin/members/${id}/${action}`, { method: 'POST' });
+    await api(`/api/admin/members/${id}/${action}`, { method: 'POST', body: { tag } });
     toast(action === 'approve' ? 'Approved. They’ve been told on WhatsApp.' : 'Declined.');
   } catch (ex) {
     toast(ex.message);

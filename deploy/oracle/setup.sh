@@ -114,6 +114,10 @@ $DOMAIN {
 		Strict-Transport-Security "max-age=31536000"
 		-Server
 	}
+	# Nothing the app accepts is bigger than a photo upload.
+	request_body {
+		max_size 10MB
+	}
 	reverse_proxy 127.0.0.1:$PORT
 }
 CADDY
@@ -131,7 +135,12 @@ step "Locking down SSH and unused services"
 # Root never logs in over SSH: you log in as ubuntu and use sudo. (Root isn't renamed; Ubuntu relies on
 # that name.) The change is checked with sshd -t before it takes effect, so it can't lock you out.
 SSH_DROPIN=/etc/ssh/sshd_config.d/05-muhallareads.conf
-if grep -qiE '^\s*Include\s+/etc/ssh/sshd_config\.d/' /etc/ssh/sshd_config; then
+# Only if you can still get in afterwards: you ran this with sudo as a normal user who logs in with a key.
+ADMIN_USER=${SUDO_USER:-}
+ADMIN_KEYS=$( [[ -n $ADMIN_USER && $ADMIN_USER != root ]] && getent passwd "$ADMIN_USER" | cut -d: -f6)/.ssh/authorized_keys
+if [[ -z $ADMIN_USER || $ADMIN_USER == root || ! -s $ADMIN_KEYS ]]; then
+  echo "Skipping the SSH lock-down: run setup.sh with sudo from your normal login (e.g. ubuntu) that uses an SSH key."
+elif grep -qiE '^\s*Include\s+/etc/ssh/sshd_config\.d/' /etc/ssh/sshd_config; then
   printf '%s\n' '# Written by MuhallaReads setup.sh' 'PermitRootLogin no' 'PasswordAuthentication no' > "$SSH_DROPIN"
   if sshd -t 2>/dev/null; then
     systemctl reload ssh 2>/dev/null || systemctl reload sshd 2>/dev/null || true

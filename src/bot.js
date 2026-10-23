@@ -2,7 +2,7 @@
 // Everything else (finding, adding, requesting, chatting) happens in the web app; any other message
 // gets a button that signs the member in there.
 // Members only ever see each other's display names. Phone numbers stay on the server.
-import { who, LibraryError } from './library.js';
+import { who, LibraryError, approvalTag } from './library.js';
 import { placeOf } from './db.js';
 
 const MAX_MESSAGE = 3900; // WhatsApp's limit is 4096 characters
@@ -183,24 +183,24 @@ export function createBot({ store, library, notifier, settings }) {
               list
                 .map((p) => {
                   const by = p.referrer_name ? `invited by ${p.referrer_name}` : 'join code';
-                  return `#${p.id} ${p.name} (${placeOf(p)}), ${by}`;
+                  return `• ${p.name} (${placeOf(p)}), ${by}: *approve ${p.id}-${approvalTag(store.memberById(p.id))}*`;
                 })
                 .join('\n') +
-              '\n\nReply *approve 12* or *decline 12*.',
+              '\n\nReply with the *approve …* shown, or *decline* with the same number.',
           ),
         );
       },
     ],
     [
-      /^(approve|decline)\s+#?(\d+)$/i,
+      /^(approve|decline)\s+#?(\d+)(?:-([0-9a-f]{4}))?$/i,
       async (m, x, reply) => {
         if (!isAdmin(m)) return false;
         try {
           if (x[1].toLowerCase() === 'approve') {
-            const { member, already } = await library.approveMember(x[2]);
+            const { member, already } = await library.approveMember(x[2], x[3]);
             return reply(already ? `${member.name} is already a member.` : `✅ Approved ${who(member)}. They've been told.`);
           }
-          const gone = await library.declineMember(x[2]);
+          const gone = await library.declineMember(x[2], x[3]);
           return reply(`Declined ${gone.name}. Their details have been deleted.`);
         } catch (err) {
           if (err instanceof LibraryError) return reply(err.message);

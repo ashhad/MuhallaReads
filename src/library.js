@@ -1,11 +1,29 @@
 // Borrowing, lending and private messaging between members, done in the web app. WhatsApp only carries
 // notifications, each with a button that opens the right page of the app.
 // Nobody's phone number is ever revealed unless they explicitly choose to share it with one person.
-import { matchesQuery, placeOf } from './db.js';
+import crypto from 'node:crypto';
+import { matchesQuery, placeOf, plainLine, queryWords } from './db.js';
 
 export class LibraryError extends Error {}
 
+/**
+ * A member's own words relayed to someone else on WhatsApp: as a quote, without formatting, so they
+ * can't pass for a message from the library itself.
+ */
+const quoted = (text) =>
+  String(text)
+    .replace(/[*_~`]/g, '')
+    .split(/\r?\n/)
+    .map((line) => `> ${line}`)
+    .join('\n');
+
 const CHAT_MAX = 1000;
+
+/**
+ * A short tag that, with the member number, names one specific person waiting to join. Member numbers
+ * can be reused after someone is declined, so an old "approve 12" button must not approve the next #12.
+ */
+export const approvalTag = (m) => crypto.createHash('sha256').update(`${m.id}|${m.created_at}|${m.phone}`).digest('hex').slice(0, 4);
 
 /** "Bilal (Sunrise Apartments, Saket)": name plus rough location, for messages to the other person. */
 export const who = (m) => (placeOf(m) ? `${m.name} (${placeOf(m)})` : m.name);
@@ -45,7 +63,7 @@ export function createLibrary({ store, notifier, settings, clock = () => new Dat
         `You have ${settings.maxPendingRequests} requests waiting for an answer. Cancel one before asking for more.`,
       );
     }
-    note = String(note || '').trim().slice(0, 200);
+    note = plainLine(note, 200); // one plain line, shown in quotes
     const id = store.createRequest({ bookId: book.id, borrowerId: borrower.id, ownerId: book.owner_id, note });
 
     await notifier.notify(book.owner_id, {
@@ -144,7 +162,7 @@ export function createLibrary({ store, notifier, settings, clock = () => new Dat
 
     await notifier.notify(other.id, {
       requestId: r.id,
-      text: `💬 *${member.name}* about _${r.book_title}_:\n${body}\n\nReply in the app.`,
+      text: `💬 *${member.name}* about _${r.book_title}_:\n${quoted(body)}\n\nReply in the app.`,
       link: requestLink(r.id, 'Reply'),
       template: { name: 'request_update', params: [r.book_title, `${member.name} sent you a message`], url: String(r.id) },
     });
@@ -155,8 +173,10 @@ export function createLibrary({ store, notifier, settings, clock = () => new Dat
     const r = getRequest(requestId, member);
     if (r.status !== 'accepted') throw new LibraryError('You can share your number once a request is accepted.');
     const other = otherParty(r, member);
+    if (store.isBlocked(member.id, other.id)) throw new LibraryError("You can't share your number with this person.");
     const flag = r.owner_id === member.id ? 'owner_shared' : 'borrower_shared';
-    if (!r[flag]) store.updateRequest(r.id, { [flag]: 1 });
+    if (r[flag]) return other; // already shared: don't send it again
+    store.updateRequest(r.id, { [flag]: 1 });
 
     await notifier.notify(other.id, {
       requestId: r.id,
@@ -193,7 +213,8 @@ export function createLibrary({ store, notifier, settings, clock = () => new Dat
 
     for (const wish of store.allWishes()) {
       if (wish.member_id === member.id || store.isBlocked(wish.member_id, member.id)) continue;
-      const book = result.added.find((b) => matchesQuery(b, wish.query));
+      const words = queryWords(wish.query);
+      const book = result.added.find((b) => matchesQuery(b, words));
       if (!book) continue;
       store.removeWish(wish.member_id, wish.id);
       await notifier.notify(wish.member_id, {
@@ -303,32 +324,48 @@ export function createLibrary({ store, notifier, settings, clock = () => new Dat
     if (member.status !== 'pending') return 'approved';
     if (member.approval_asked_at) return 'asked';
     const list = admins();
-    if (!list.length) {
+    if (!settings.adminPhones?.length) {
+      // No admins configured at all: the library is open, as the operator chose.
       store.setMemberStatus(member.id, 'active');
-      console.warn('No admin has joined yet, so a new member was let in without approval (set ADMIN_PHONES and join).');
       return 'approved';
+    }
+    if (!list.length) {
+      // Admins are configured but none has an active account (not joined yet, or left): never let
+      // people in unchecked. They wait, and appear on the admin's list once an admin joins.
+      console.warn('A new member is waiting, but no admin account is active (has an admin joined?).');
+      return 'asked';
     }
     store.markApprovalAsked(member.id);
     const referrer = member.referred_by && store.memberById(member.referred_by);
     const how = referrer ? `invited by *${who(referrer)}*` : 'using the join code';
+    const ref = `${member.id}-${approvalTag(member)}`;
     for (const admin of list) {
       await notifier.notify(admin.id, {
         text:
           `🆕 *${who(member)}* wants to join, ${how}.\n` +
-          `Reply *approve ${member.id}* or *decline ${member.id}*, or use the Me tab in the app.`,
+          `Reply *approve ${ref}* or *decline ${ref}*, or use the Me tab in the app.`,
         buttons: [
-          { id: `approve:${member.id}`, title: 'Approve' },
-          { id: `decline:${member.id}`, title: 'Decline' },
+          { id: `approve:${ref}`, title: 'Approve' },
+          { id: `decline:${ref}`, title: 'Decline' },
         ],
       });
     }
     return 'asked';
   }
 
-  async function approveMember(id) {
+  /** The member waiting as #id, if `tag` (when given) matches them: an old button or list can't pick someone else. */
+  function waiting(id, tag) {
     const m = store.memberById(Number(id));
-    if (!m) throw new LibraryError(`There's no one with number #${id}. They may have been declined already.`);
+    if (!m || (tag && tag.toLowerCase() !== approvalTag(m))) {
+      throw new LibraryError("That request is out of date (they may have been declined already). Send *pending* to see who's waiting.");
+    }
+    return m;
+  }
+
+  async function approveMember(id, tag) {
+    const m = waiting(id, tag);
     if (m.status === 'active') return { member: m, already: true };
+    if (m.status !== 'pending') throw new LibraryError(`${m.name} is no longer waiting to join.`);
     const me = store.setMemberStatus(m.id, 'active');
     await notifier.notify(me.id, {
       text:
@@ -343,10 +380,10 @@ export function createLibrary({ store, notifier, settings, clock = () => new Dat
     return { member: me };
   }
 
-  async function declineMember(id) {
-    const m = store.memberById(Number(id));
-    if (!m) throw new LibraryError(`There's no one with number #${id}. They may have been declined already.`);
+  async function declineMember(id, tag) {
+    const m = waiting(id, tag);
     if (m.status !== 'pending') throw new LibraryError(`${m.name} is already a member. To remove them, send *remove member ${m.id}*.`);
+    store.setMemberStatus(m.id, 'declined'); // first, so an approval arriving meanwhile can't let them in
     await notifier.notify(m.id, {
       text: "Sorry, your request to join wasn't approved. If you think this is a mistake, talk to the neighbour who invited you.",
       optional: true,
@@ -355,9 +392,14 @@ export function createLibrary({ store, notifier, settings, clock = () => new Dat
     return m;
   }
 
+  const MAX_WISHES = 20;
+
   function addWish(member, query) {
     query = String(query || '').trim().slice(0, 100);
     if (!query) throw new LibraryError('Which book should we watch for?');
+    if (store.wishesOf(member.id).length >= MAX_WISHES) {
+      throw new LibraryError(`You're already waiting for ${MAX_WISHES} books. Remove one on the Me tab first.`);
+    }
     return store.addWish(member.id, query);
   }
 

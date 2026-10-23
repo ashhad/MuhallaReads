@@ -7,7 +7,7 @@ import { normalizeIsbn, looksLikeIsbn } from './isbn.js';
 import * as lookup from './lookup.js';
 import { identifyBooks, parseDataUrl, VisionError } from './vision.js';
 import { createBot, cleanName, cleanPlace } from './bot.js';
-import { createLibrary, LibraryError } from './library.js';
+import { createLibrary, LibraryError, approvalTag } from './library.js';
 import { createNotifier } from './notifier.js';
 import { createPhotoLimits, PhotoLimitError } from './photos.js';
 import { createMetaTransport, whatsappRouter } from './whatsapp.js';
@@ -47,15 +47,15 @@ export function createApp({ store, deps = {}, settings = config } = {}) {
   app.use(securityHeaders);
   // Only photo uploads may be big; everything else (including the public login and webhook) is small,
   // so nobody can tie up the server's memory with huge requests.
-  app.use('/api/scan-photo', express.json({ limit: '8mb' }));
-  app.use(
-    express.json({
-      limit: '256kb',
-      verify: (req, _res, buf) => {
-        req.rawBody = buf; // needed to check WhatsApp webhook signatures
-      },
-    }),
-  );
+  // Only photo uploads may be big, and their body is read only after the sign-in check (see the route),
+  // so nobody can make the server hold large uploads without an account.
+  const smallJson = express.json({
+    limit: '256kb',
+    verify: (req, _res, buf) => {
+      req.rawBody = buf; // needed to check WhatsApp webhook signatures
+    },
+  });
+  app.use((req, res, next) => (req.path === '/api/scan-photo' ? next() : smallJson(req, res, next)));
   // Rate limits. Without a sign-in we can only go by IP address, which many people can share (mobile
   // networks, a building's Wi-Fi), so those limits are per IP; signed-in use is limited per member.
   app.use(['/api/config', '/api/login'], rateLimit({ windowMs: 60_000, max: 60 }));
@@ -102,6 +102,7 @@ export function createApp({ store, deps = {}, settings = config } = {}) {
   const isAdmin = (m) => Boolean(settings.adminPhones?.includes(m.phone)) && m.status === 'active';
   const pendingView = (p) => ({
     id: p.id,
+    tag: approvalTag(store.memberById(p.id) || p), // ties the buttons to this exact person
     name: p.name,
     place: placeOf(p),
     invitedBy: p.referrer_name ? `${p.referrer_name}${placeOf({ building: p.referrer_building, locality: p.referrer_locality }) ? ` (${placeOf({ building: p.referrer_building, locality: p.referrer_locality })})` : ''}` : null,
@@ -168,8 +169,9 @@ export function createApp({ store, deps = {}, settings = config } = {}) {
 
   api.post('/admin/members/:id/:action', requireAdmin, async (req, res) => {
     const { action, id } = req.params;
-    if (action === 'approve') return res.json({ member: pendingView((await library.approveMember(id)).member) });
-    if (action === 'decline') return res.json({ declined: (await library.declineMember(id)).id });
+    const tag = String(req.body?.tag || '');
+    if (action === 'approve') return res.json({ member: pendingView((await library.approveMember(id, tag)).member) });
+    if (action === 'decline') return res.json({ declined: (await library.declineMember(id, tag)).id });
     throw new HttpError(404, 'Not found.');
   });
 
@@ -211,7 +213,7 @@ export function createApp({ store, deps = {}, settings = config } = {}) {
   // Covers from outside sources are only passed on from the hosts we trust (see security.js).
   const safeCover = (b) => ({ ...b, cover: isAllowedCover(b.cover) ? b.cover : null });
 
-  api.get('/lookup', async (req, res) => {
+  api.get('/lookup', requireApproved, async (req, res) => {
     const q = String(req.query.q || req.query.isbn || '').trim().slice(0, 200);
     if (!q) return res.json({ results: [] });
     if (looksLikeIsbn(q)) {
@@ -259,7 +261,7 @@ export function createApp({ store, deps = {}, settings = config } = {}) {
     res.json({ added, skipped: skipped.length });
   });
 
-  api.post('/scan-photo', requireApproved, async (req, res) => {
+  api.post('/scan-photo', requireApproved, express.json({ limit: '8mb' }), async (req, res) => {
     const img = parseDataUrl(req.body?.image);
     if (!img) throw new HttpError(400, 'No photo received.');
     let found;

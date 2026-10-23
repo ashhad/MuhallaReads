@@ -51,12 +51,16 @@ export function createNotifier({ store, transport, settings, clock = () => new D
       console.warn('Monthly WhatsApp template budget reached; notification queued.');
       return 'queued';
     }
+    // Count it before the (slow) send, so notifications arriving at the same moment see the budget and
+    // the "one per absence" rule already used; undo if the send fails.
+    store.bumpUsage('template');
+    store.markNudged(member.id, clock().toISOString());
     try {
       await transport.sendTemplate(member.phone, n.template);
-      store.bumpUsage('template');
-      store.markNudged(member.id, clock().toISOString());
       return 'template';
     } catch (err) {
+      store.bumpUsage('template', undefined, -1);
+      store.markNudged(member.id, member.nudged_at ?? null);
       console.error(`WhatsApp template "${n.template.name}" failed:`, err.message);
       return 'queued';
     }
