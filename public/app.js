@@ -67,12 +67,15 @@ function toast(msg) {
 const waLink = (phone, text) => `https://wa.me/${phone}${text ? `?text=${encodeURIComponent(text)}` : ''}`;
 const fmtDate = (iso) => (iso ? new Date(iso).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' }) : '');
 
+// A cover that fails to load leaves the coloured initials showing (no inline handlers: the CSP forbids them).
+document.addEventListener('error', (e) => e.target.matches?.('.cover img') && e.target.remove(), true);
+
 function cover(b) {
   const initials = esc((b.title || '?').replace(/^(the|a|an)\s+/i, '').slice(0, 2));
   const hue = [...(b.title || '')].reduce((h, c) => (h * 31 + c.charCodeAt(0)) % 360, 7);
   const url = b.cover || b.cover_url;
   return `<div class="cover" style="--hue:${hue}">${initials}${
-    url ? `<img src="${esc(url)}" alt="" loading="lazy" referrerpolicy="no-referrer" onerror="this.remove()">` : ''
+    url ? `<img src="${esc(url)}" alt="" loading="lazy" referrerpolicy="no-referrer">` : ''
   }</div>`;
 }
 
@@ -272,6 +275,18 @@ function forgetTray() {
   state.scanned.clear();
   store.set('tray', null);
 }
+
+$('#logout-all').addEventListener('click', async () => {
+  const ok = await sheet({
+    title: 'Sign out on all devices?',
+    text: 'Use this if you lost a phone or signed in on someone else’s. Send “login” to the bot to sign in again.',
+    ok: 'Sign out everywhere',
+  });
+  if (ok === null) return;
+  await api('/api/logout-everywhere', { method: 'POST' }).catch(() => {});
+  forgetTray();
+  signedOut();
+});
 
 $('#logout').addEventListener('click', async () => {
   await api('/api/logout', { method: 'POST' }).catch(() => {});

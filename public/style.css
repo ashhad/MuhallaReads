@@ -199,7 +199,7 @@ input[type=checkbox] { width: 1.2rem; height: 1.2rem; padding: 0; flex: none; ac
 .meter { height: 8px; border-radius: 999px; background: var(--line); overflow: hidden; }
 .meter span { display: block; height: 100%; background: var(--brand); border-radius: inherit; }
 #me-name { font-family: var(--serif); font-weight: 400; font-size: 1.35rem; }
-.me-footer { display: flex; justify-content: space-between; margin: 2rem 0 1rem; }
+.me-footer { display: flex; flex-wrap: wrap; gap: .5rem; justify-content: space-between; margin: 2rem 0 1rem; }
 #wishes .info { font-size: .95rem; }
 
 #toast {

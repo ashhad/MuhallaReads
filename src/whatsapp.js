@@ -119,12 +119,16 @@ export function whatsappRouter({ bot, transport, config }) {
       console.warn('WhatsApp webhook: delivery ignored because WHATSAPP_TOKEN / WHATSAPP_PHONE_NUMBER_ID are not set');
       return res.sendStatus(404);
     }
-    if (wa.appSecret) {
-      const expected = 'sha256=' + crypto.createHmac('sha256', wa.appSecret).update(req.rawBody || '').digest('hex');
-      if (!safeEqual(expected, req.get('x-hub-signature-256') || '')) {
-        console.warn('WhatsApp webhook: signature mismatch, delivery rejected (check WHATSAPP_APP_SECRET)');
-        return res.sendStatus(401);
-      }
+    // Without the app secret anyone could post a fake message "from" any number (an admin's, say), so
+    // unsigned deliveries are never accepted.
+    if (!wa.appSecret) {
+      console.error('WhatsApp webhook: delivery refused because WHATSAPP_APP_SECRET is not set');
+      return res.sendStatus(503);
+    }
+    const expected = 'sha256=' + crypto.createHmac('sha256', wa.appSecret).update(req.rawBody || '').digest('hex');
+    if (!safeEqual(expected, req.get('x-hub-signature-256') || '')) {
+      console.warn('WhatsApp webhook: signature mismatch, delivery rejected (check WHATSAPP_APP_SECRET)');
+      return res.sendStatus(401);
     }
     res.sendStatus(200); // acknowledge immediately; replies are sent asynchronously
 

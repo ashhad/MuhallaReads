@@ -22,15 +22,16 @@ CREATE TABLE IF NOT EXISTS members (
   approval_asked_at TEXT,                          -- when admins were asked to approve
   -- New-book alerts on WhatsApp (members can turn them off).
   book_alerts     INTEGER NOT NULL DEFAULT 1,
-  books_seen_at   TEXT,                            -- told about / saw books added up to this time
+  books_seen_id   INTEGER,                         -- told about / saw books up to this book id
   book_alert_at   TEXT,                            -- last new-book message, to keep them rare
   nudged_at       TEXT                             -- last paid template, for "one per absence"
 );
 
 CREATE TABLE IF NOT EXISTS sessions (
-  token      TEXT PRIMARY KEY,
-  member_id  INTEGER NOT NULL REFERENCES members(id) ON DELETE CASCADE,
-  created_at TEXT NOT NULL
+  token        TEXT PRIMARY KEY,
+  member_id    INTEGER NOT NULL REFERENCES members(id) ON DELETE CASCADE,
+  created_at   TEXT NOT NULL,
+  last_used_at TEXT
 );
 
 CREATE TABLE IF NOT EXISTS login_codes (
@@ -158,7 +159,7 @@ function migrate(db) {
     ref_code: 'TEXT',
     approval_asked_at: 'TEXT',
     book_alerts: 'INTEGER NOT NULL DEFAULT 1',
-    books_seen_at: 'TEXT',
+    books_seen_id: 'INTEGER',
     book_alert_at: 'TEXT',
     nudged_at: 'TEXT',
   };
@@ -167,6 +168,8 @@ function migrate(db) {
     if (!cols.has(col)) db.exec(`ALTER TABLE members ADD COLUMN ${col} ${type}`);
   }
   db.exec('CREATE UNIQUE INDEX IF NOT EXISTS members_ref_code ON members(ref_code)');
+  const sessionCols = new Set(db.prepare('PRAGMA table_info(sessions)').all().map((c) => c.name));
+  if (!sessionCols.has('last_used_at')) db.exec('ALTER TABLE sessions ADD COLUMN last_used_at TEXT');
   const usageCols = new Set(db.prepare('PRAGMA table_info(usage)').all().map((c) => c.name));
   if (!usageCols.has('photos')) db.exec('ALTER TABLE usage ADD COLUMN photos INTEGER NOT NULL DEFAULT 0');
   if (!usageCols.has('photo_cost')) db.exec('ALTER TABLE usage ADD COLUMN photo_cost REAL NOT NULL DEFAULT 0');
@@ -177,6 +180,7 @@ export const placeOf = (m) => [m?.building, m?.locality].filter(Boolean).join(',
 
 const now = () => new Date().toISOString();
 const randomToken = () => crypto.randomBytes(24).toString('base64url');
+const SESSION_IDLE_MS = 60 * 86400_000; // signed out after 60 days without opening the app
 
 /** Lower-cases and strips punctuation so "The Alchemist!" and "the alchemist" compare equal. */
 export const normText = (s) =>
@@ -226,13 +230,15 @@ export class Store {
 
   createMember({ name, phone, status = 'active', joinedVia = null, referredBy = null }) {
     return this.q(
-      `INSERT INTO members (name, phone, created_at, status, joined_via, referred_by, books_seen_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?) RETURNING *`,
-    ).get(name, phone, now(), status, joinedVia, referredBy, now());
+      `INSERT INTO members (name, phone, created_at, status, joined_via, referred_by, books_seen_id)
+       VALUES (?, ?, ?, ?, ?, ?, (SELECT COALESCE(MAX(id), 0) FROM books)) RETURNING *`,
+    ).get(name, phone, now(), status, joinedVia, referredBy);
   }
 
   setMemberStatus(id, status) {
-    return this.q('UPDATE members SET status = ?, books_seen_at = COALESCE(books_seen_at, ?) WHERE id = ? RETURNING *').get(status, now(), id);
+    return this.q(
+      'UPDATE members SET status = ?, books_seen_id = COALESCE(books_seen_id, (SELECT COALESCE(MAX(id), 0) FROM books)) WHERE id = ? RETURNING *',
+    ).get(status, id);
   }
 
   markApprovalAsked(id) {
@@ -282,12 +288,12 @@ export class Store {
     return this.q("SELECT * FROM members WHERE status = 'active' AND book_alerts = 1 AND id != ?").all(exceptId);
   }
 
-  /** Books added by others since `since`, newest first. */
-  booksAddedSince(since, exceptOwnerId) {
+  /** Books added by others after book `sinceId`, newest first. (Ids, not times: no same-millisecond misses.) */
+  booksAddedSince(sinceId, exceptOwnerId) {
     return this.q(
       `SELECT b.id, b.title, b.owner_id FROM books b JOIN members m ON m.id = b.owner_id
-       WHERE b.created_at > ? AND b.owner_id != ? AND m.status = 'active' ORDER BY b.id DESC`,
-    ).all(since, exceptOwnerId);
+       WHERE b.id > ? AND b.owner_id != ? AND m.status = 'active' ORDER BY b.id DESC`,
+    ).all(sinceId, exceptOwnerId);
   }
 
   /**
@@ -295,8 +301,9 @@ export class Store {
    * records a new-book message, for spacing them out.
    */
   markBooksSeen(id, { alertedAt } = {}) {
-    if (alertedAt) this.q('UPDATE members SET books_seen_at = ?, book_alert_at = ? WHERE id = ?').run(now(), alertedAt, id);
-    else this.q('UPDATE members SET books_seen_at = ? WHERE id = ?').run(now(), id);
+    const seen = '(SELECT COALESCE(MAX(id), 0) FROM books)';
+    if (alertedAt) this.q(`UPDATE members SET books_seen_id = ${seen}, book_alert_at = ? WHERE id = ?`).run(alertedAt, id);
+    else this.q(`UPDATE members SET books_seen_id = ${seen} WHERE id = ?`).run(id);
   }
 
   setPlace(id, { building, locality }) {
@@ -330,13 +337,28 @@ export class Store {
 
   createSession(memberId) {
     const token = randomToken();
-    this.q('INSERT INTO sessions (token, member_id, created_at) VALUES (?, ?, ?)').run(token, memberId, now());
+    const cutoff = new Date(Date.now() - SESSION_IDLE_MS).toISOString();
+    this.q('DELETE FROM sessions WHERE COALESCE(last_used_at, created_at) < ?').run(cutoff);
+    this.q('INSERT INTO sessions (token, member_id, created_at, last_used_at) VALUES (?, ?, ?, ?)').run(token, memberId, now(), now());
     return token;
   }
 
+  /** The signed-in member, or undefined. Sessions end after 60 days without use. */
   memberBySession(token) {
     if (!token) return undefined;
-    return this.q('SELECT m.* FROM sessions s JOIN members m ON m.id = s.member_id WHERE s.token = ?').get(token);
+    const s = this.q('SELECT member_id, COALESCE(last_used_at, created_at) AS used FROM sessions WHERE token = ?').get(String(token));
+    if (!s) return undefined;
+    const idle = Date.now() - Date.parse(s.used);
+    if (idle > SESSION_IDLE_MS) {
+      this.deleteSession(token);
+      return undefined;
+    }
+    if (idle > 86400_000) this.q('UPDATE sessions SET last_used_at = ? WHERE token = ?').run(now(), String(token));
+    return this.memberById(s.member_id);
+  }
+
+  deleteSessionsOf(memberId) {
+    this.q('DELETE FROM sessions WHERE member_id = ?').run(memberId);
   }
 
   deleteSession(token) {

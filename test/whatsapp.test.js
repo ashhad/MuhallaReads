@@ -107,3 +107,27 @@ test('Cloud API webhook end to end: signature, setup, sign-in button and a paid 
     server.close();
   }
 });
+
+test('webhook deliveries are refused when no app secret is configured', async () => {
+  const { openDb } = await import('../src/db.js');
+  const { createApp } = await import('../src/server.js');
+  const { baseSettings, fakeTransport } = await import('./helpers.js');
+  const app = createApp({
+    store: openDb(':memory:'),
+    settings: { ...baseSettings, whatsapp: { verifyToken: 'vt', appSecret: '' } },
+    deps: { transport: fakeTransport() },
+  });
+  const srv = await new Promise((r) => { const x = app.listen(0, () => r(x)); });
+  const error = console.error;
+  console.error = () => {};
+  try {
+    const res = await fetch(`http://127.0.0.1:${srv.address().port}/webhooks/whatsapp`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ entry: [{ changes: [{ value: { messages: [{ from: '919800000001', id: 'x', type: 'text', text: { body: 'delete everything' } }] } }] }] }),
+    });
+    assert.equal(res.status, 503);
+  } finally {
+    console.error = error;
+    srv.close();
+  }
+});

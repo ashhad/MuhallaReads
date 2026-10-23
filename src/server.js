@@ -11,6 +11,7 @@ import { createLibrary, LibraryError } from './library.js';
 import { createNotifier } from './notifier.js';
 import { createPhotoLimits, PhotoLimitError } from './photos.js';
 import { createMetaTransport, whatsappRouter } from './whatsapp.js';
+import { securityHeaders, rateLimit, isAllowedCover } from './security.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const root = path.join(here, '..');
@@ -41,14 +42,21 @@ export function createApp({ store, deps = {}, settings = config } = {}) {
   app.locals.library = library;
   app.locals.photos = photos;
   app.disable('x-powered-by');
+  // Caddy, on the same machine, passes the visitor's IP; trust only that, for rate limits.
+  app.set('trust proxy', 'loopback');
+  app.use(securityHeaders);
+  // Only photo uploads may be big; everything else (including the public login and webhook) is small,
+  // so nobody can tie up the server's memory with huge requests.
+  app.use('/api/scan-photo', express.json({ limit: '8mb' }));
   app.use(
     express.json({
-      limit: '12mb',
+      limit: '256kb',
       verify: (req, _res, buf) => {
         req.rawBody = buf; // needed to check WhatsApp webhook signatures
       },
     }),
   );
+  app.use('/api', rateLimit({ windowMs: 60_000, max: 300 }));
   app.use(whatsappRouter({ bot, transport, config: settings }));
 
   // ---------- public ----------
@@ -63,7 +71,8 @@ export function createApp({ store, deps = {}, settings = config } = {}) {
   });
 
   // Sign-in links come from the WhatsApp bot ("login"), so the web app never asks for a phone number.
-  app.post('/api/login', (req, res) => {
+  const loginLimit = rateLimit({ windowMs: 10 * 60_000, max: 30, message: 'Too many sign-in attempts. Please wait a few minutes.' });
+  app.post('/api/login', loginLimit, (req, res) => {
     const memberId = store.consumeLoginCode(req.body?.code);
     if (!memberId) throw new HttpError(401, 'That sign-in link has expired. Send "login" to the bot for a new one.');
     res.json({ token: store.createSession(memberId) });
@@ -165,6 +174,16 @@ export function createApp({ store, deps = {}, settings = config } = {}) {
     res.json({ ok: true });
   });
 
+  // For a lost or shared phone: signs this member out on every device.
+  api.post('/logout-everywhere', (req, res) => {
+    store.deleteSessionsOf(req.member.id);
+    res.json({ ok: true });
+  });
+
+  // Lookups call Google Books / Open Library on the server's quota, so each member gets a fair share.
+  const lookupLimit = rateLimit({ windowMs: 60_000, max: 60, key: (req) => `m${req.member.id}` });
+  api.use(['/lookup', '/book-info'], lookupLimit);
+
   api.get('/books', (req, res) => {
     const q = String(req.query.q || '');
     let results = store.search(q, { limit: 200 });
@@ -220,7 +239,7 @@ export function createApp({ store, deps = {}, settings = config } = {}) {
         title: String(b?.title || '').trim().slice(0, 300),
         author: String(b?.author || '').trim().slice(0, 200),
         isbn: normalizeIsbn(b?.isbn),
-        cover: /^https:\/\//.test(b?.cover || '') ? String(b.cover).slice(0, 500) : null,
+        cover: isAllowedCover(b?.cover) ? String(b.cover).slice(0, 500) : null,
       }))
       .filter((b) => b.title);
     if (!books.length) throw new HttpError(400, 'Add at least one book with a title.');

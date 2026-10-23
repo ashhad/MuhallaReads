@@ -216,3 +216,62 @@ test('members can turn new-book alerts off in the app', async () => {
   const off = await call('/api/me', { method: 'PATCH', token: t, body: { bookAlerts: false } });
   assert.equal(off.data.member.bookAlerts, false);
 });
+
+// ---------- security ----------
+
+test('security headers are sent on pages and the API', async () => {
+  for (const path of ['/', '/api/config']) {
+    const h = (await fetch(base + path)).headers;
+    assert.match(h.get('content-security-policy'), /script-src 'self'; .*frame-ancestors 'none'/, path);
+    assert.equal(h.get('x-content-type-options'), 'nosniff');
+    assert.equal(h.get('x-frame-options'), 'DENY');
+    assert.equal(h.get('referrer-policy'), 'no-referrer');
+  }
+});
+
+test('big requests are refused except photo uploads', async () => {
+  const big = 'x'.repeat(300 * 1024);
+  assert.equal((await call('/api/login', { method: 'POST', body: { code: big } })).status, 413);
+  const t = await signIn('919877777777', 'Ira');
+  const photo = await call('/api/scan-photo', { method: 'POST', token: t, body: { image: `data:image/jpeg;base64,${big}` } });
+  assert.equal(photo.status, 200); // a few hundred KB photo is fine
+});
+
+test('covers from unknown sites are dropped', async () => {
+  const t = await signIn('919888888888', 'Jai');
+  const { data } = await call('/api/books', {
+    method: 'POST',
+    token: t,
+    body: { books: [
+      { title: 'Tracker Book', cover: 'https://evil.example/pixel.gif' },
+      { title: 'Real Cover', cover: 'https://covers.openlibrary.org/b/id/1-M.jpg' },
+    ] },
+  });
+  assert.deepEqual(data.added.map((b) => b.cover_url), [null, 'https://covers.openlibrary.org/b/id/1-M.jpg']);
+});
+
+test('sessions end after 60 days unused, and "sign out everywhere" ends them all', async () => {
+  const phone = '919899999999';
+  const a = await signIn(phone, 'Kabir');
+  const b = await signIn(phone, 'Kabir');
+  assert.equal((await call('/api/me', { token: b })).status, 200);
+  assert.equal((await call('/api/logout-everywhere', { method: 'POST', token: a })).status, 200);
+  assert.equal((await call('/api/me', { token: b })).status, 401);
+
+  const c = await signIn(phone, 'Kabir');
+  store.db.prepare('UPDATE sessions SET last_used_at = ? WHERE token = ?').run(new Date(Date.now() - 61 * 86400_000).toISOString(), c);
+  assert.equal((await call('/api/me', { token: c })).status, 401);
+});
+
+test('repeated sign-in attempts are rate limited', async () => {
+  const app = createApp({ store: openDb(':memory:'), settings: { ...baseSettings, whatsapp: {} }, deps: { transport: null } });
+  const srv = await new Promise((r) => { const x = app.listen(0, () => r(x)); });
+  const url = `http://127.0.0.1:${srv.address().port}/api/login`;
+  const statuses = [];
+  for (let i = 0; i < 32; i++) {
+    statuses.push((await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{"code":"nope"}' })).status);
+  }
+  srv.close();
+  assert.equal(statuses[0], 401);
+  assert.equal(statuses.at(-1), 429);
+});

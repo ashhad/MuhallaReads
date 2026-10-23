@@ -343,3 +343,10 @@ test('a single new book is announced by name; waiting members get no alerts', as
   assert.equal(w.transport.to(BILAL)[0].link.label, 'See the book');
   assert.equal(w.transport.to(RIYA).length, 0);
 });
+
+test('"logout everywhere" ends every web session', async () => {
+  const w = await twoMembers();
+  const token = w.store.createSession(w.member(BILAL).id);
+  assert.match(await w.say(BILAL, 'logout everywhere'), /Signed out of the app on every device/);
+  assert.equal(w.store.memberBySession(token), undefined);
+});

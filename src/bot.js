@@ -30,6 +30,7 @@ export function helpText(communityName, { admin = false, photos = false } = {}) 
     '👤 `name Ayesha` · 🏢 `building Green Park Tower` · 📍 `locality Saket`',
     '💌 `invite`: your link for inviting a neighbour (an admin approves everyone)',
     '🔔 `alerts off` / `alerts on`: messages when neighbours add new books',
+    '🔒 `logout everywhere`: sign out of the app on all devices (e.g. a lost phone)',
     '🗑️ `delete me`: delete your account and all your data',
     ...(admin ? ['', '🛠️ Admin: `pending` · `approve 12` · `decline 12` · `stats` · `members` · `remove member 12`'] : []),
     '',
@@ -143,6 +144,13 @@ export function createBot({ store, library, notifier, settings }) {
     ],
     [/^building\s+([\s\S]+)$/i, (m, x, reply) => changePlace(m, 'building', x[1], reply)],
     [/^(locality|area)\s+([\s\S]+)$/i, (m, x, reply) => changePlace(m, 'locality', x[2], reply)],
+    [
+      /^(log ?out|sign ?out) (everywhere|all|all devices)$/i,
+      (m, _, reply) => {
+        store.deleteSessionsOf(m.id);
+        return reply('🔒 Signed out of the app on every device. Send *login* for a new sign-in button.');
+      },
+    ],
     [
       /^invite\b/i,
       (m, _, reply) => {

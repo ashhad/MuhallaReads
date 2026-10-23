@@ -270,13 +270,13 @@ export function createLibrary({ store, notifier, settings, clock = () => new Dat
   async function newsSummary(member, reply) {
     if (member.status !== 'active' || !member.book_alerts) return false;
     const at = clock();
-    if (!member.books_seen_at) {
+    if (member.books_seen_id == null) {
       store.markBooksSeen(member.id);
       return false;
     }
     if (member.book_alert_at && at - new Date(member.book_alert_at) < NEWS_GAP_MS) return false;
     const books = store
-      .booksAddedSince(member.books_seen_at, member.id)
+      .booksAddedSince(member.books_seen_id, member.id)
       .filter((b) => !store.isBlocked(member.id, b.owner_id) && !store.isBlocked(b.owner_id, member.id));
     if (!books.length) return false;
     store.markBooksSeen(member.id, { alertedAt: at.toISOString() });
