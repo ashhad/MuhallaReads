@@ -51,11 +51,9 @@ if ! grep -q '^SOC_NTFY_URL=' "$ENV_FILE"; then
   cat >> "$ENV_FILE" <<'ENV'
 
 # --- Security monitor (deploy/oracle/soc-setup.sh) ---
-# Instant alerts on your phone: install the free ntfy app, subscribe to a long random topic name, and put
-# https://ntfy.sh/<that topic> here. Anyone who knows the topic can read the alerts, so keep it long.
+# Instant alerts on your phone through the free ntfy app. Set it up with: sudo muhallareads-soc ntfy
 SOC_NTFY_URL=
-# To hear if this server goes down: a free healthchecks.io check (period 10 minutes, grace 20 minutes);
-# put its ping URL here.
+# To hear if this server goes down: a free healthchecks.io check. Set it up with: sudo muhallareads-soc healthcheck
 SOC_HEALTHCHECK_URL=
 # Addresses that are never blocked, separated by spaces (optional; home internet addresses often change).
 SOC_TRUSTED_IPS=
@@ -77,11 +75,9 @@ cat <<DONE
   Blocked:   sudo muhallareads-soc bans       ·  sudo muhallareads-soc unban <address>
 
   Recommended (free):
-  1. Instant phone alerts: install the ntfy app, subscribe to this topic, and put the address in
-     SOC_NTFY_URL in $ENV_FILE:
-       https://ntfy.sh/mohallareads-$(openssl rand -hex 12)
+  1. Instant phone alerts with the ntfy app:  sudo muhallareads-soc ntfy
      (WhatsApp alerts only arrive straight away if you've messaged the bot in the last 24 hours.)
-  2. Hear if the server dies: make a check at healthchecks.io (period 10 min, grace 20 min) and put
-     its ping URL in SOC_HEALTHCHECK_URL.
+  2. Hear if the server dies: make a check at healthchecks.io (period 10 min, grace 20 min), then
+     sudo muhallareads-soc healthcheck
   3. Optional dashboard: sign up at app.crowdsec.net and run the "cscli console enroll" command it shows.
 DONE

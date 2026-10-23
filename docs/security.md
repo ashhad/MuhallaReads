@@ -70,7 +70,8 @@ of the library:
 **Monitoring.**
 
 - [ ] Turn on the [security monitor](#security-monitor): `sudo bash deploy/oracle/soc-setup.sh`.
-- [ ] Set `SOC_NTFY_URL` (instant alerts) and `SOC_HEALTHCHECK_URL` (hear if the server dies).
+- [ ] Instant phone alerts: `sudo muhallareads-soc ntfy`. Hear if the server dies:
+  `sudo muhallareads-soc healthcheck`. Steps [below](#phone-alerts-and-a-dead-mans-switch).
 
 **Habits.**
 
@@ -117,19 +118,50 @@ It uses about 150 MB of memory and a few seconds of CPU every 10 minutes.
   the bot in the last 24 hours, otherwise alerts wait and arrive the next time you do (never a paid
   template). The morning report is only sent when it's free; send `security` to the bot any time to
   read the latest one.
-- **ntfy** (recommended, free): install the ntfy app, subscribe to a long random topic, and put
-  `SOC_NTFY_URL=https://ntfy.sh/<topic>` in the settings file. Alerts then arrive instantly.
-- **healthchecks.io** (free): make a check with a 10-minute period and 20-minute grace, and put its
-  ping URL in `SOC_HEALTHCHECK_URL`. It emails you if the server stops checking in (crashed, deleted,
-  out of disk).
+- **ntfy** (recommended): instant alerts on your phone. See below.
+- **healthchecks.io** (recommended): tells you if the server stops checking in (crashed, deleted,
+  out of disk, or an intruder switched the monitor off). See below.
 - Optional, also free: an [UptimeRobot](https://uptimerobot.com) monitor for your site's address
   (tells you when the site is down from the outside), and the CrowdSec Console dashboard
   (app.crowdsec.net, then `sudo cscli console enroll <key>`).
+
+### Phone alerts and a dead man's switch
+
+Both are free and take about five minutes.
+
+**ntfy: instant alerts.** On the VM:
+
+```bash
+sudo muhallareads-soc ntfy
+```
+
+It makes a private topic name (like `mohallareads-3f9a1c0b7d2e4a68`), saves it, and shows the steps:
+install **ntfy** from the Play Store or App Store, tap **+**, type the topic name, **Subscribe**, and
+allow notifications. On Android, also turn on **Instant delivery** in the topic's settings. Then
+press Enter on the VM and a test alert arrives. Alerts come with high priority; the morning report
+comes quietly. Anyone who knows the topic name can read the alerts (attackers' addresses, your SSH
+logins, never member data), so keep it to yourself.
+
+**healthchecks.io: hear if the server dies.** The server pings healthchecks.io every 10 minutes; if
+the pings stop, it emails you (and can push to ntfy too).
+
+1. Sign up at [healthchecks.io](https://healthchecks.io) (free plan, 20 checks).
+2. **Add Check**, name it `MohallaReads VM`, and set **Period** to 10 minutes and **Grace Time** to
+   20 minutes (the "Simple" schedule). Save.
+3. Copy its **ping URL** (`https://hc-ping.com/…`), then on the VM run
+   `sudo muhallareads-soc healthcheck` and paste it. The check turns green.
+4. Optional: **Integrations** → **ntfy** → the same topic address as above
+   (`https://ntfy.sh/<your topic>`, shown by `sudo grep SOC_NTFY_URL /etc/muhallareads/muhallareads.env`),
+   so "server down" also buzzes your phone. Email is on by default.
+
+To stop either: `sudo muhallareads-soc ntfy off`, `sudo muhallareads-soc healthcheck off`.
 
 **On the server:**
 
 ```bash
 sudo muhallareads-soc               # is everything running?
+sudo muhallareads-soc ntfy          # set up phone alerts (see above)
+sudo muhallareads-soc healthcheck   # connect healthchecks.io (see above)
 sudo muhallareads-soc report        # today's report, now
 sudo muhallareads-soc test          # send a test alert
 sudo muhallareads-soc bans          # who is blocked, and why

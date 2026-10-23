@@ -37,13 +37,19 @@ notify() {
     -p WorkingDirectory="$APP_DIR" /usr/bin/node --disable-warning=ExperimentalWarning \
     scripts/notify-admins.js "${flag[@]}" "$text" >/dev/null 2>&1 || logger -t muhallareads-soc "WhatsApp alert could not be sent"
 
-  local ntfy priority=high
+  local priority=high
   [[ $kind == report ]] && priority=low
-  ntfy=$(setting SOC_NTFY_URL)
-  if [[ -n $ntfy ]]; then
-    printf '%s' "$text" | curl -fsS -m 10 -H 'Title: MohallaReads security' -H 'Tags: shield' -H "Priority: $priority" \
-      --data-binary @- "$ntfy" >/dev/null 2>&1 || logger -t muhallareads-soc "ntfy alert could not be sent"
-  fi
+  push_ntfy "$text" "$priority" || logger -t muhallareads-soc "ntfy alert could not be sent"
+}
+
+# Sends a push to the ntfy topic in SOC_NTFY_URL, if one is set. Usage: push_ntfy <text> [priority]
+push_ntfy() {
+  local url
+  url=$(setting SOC_NTFY_URL)
+  [[ -n $url ]] || return 0
+  # ntfy would show WhatsApp's *bold* marks as they are.
+  printf '%s' "${1//\*/}" | curl -fsS -m 10 -H 'Title: MohallaReads security' -H 'Tags: shield' -H "Priority: ${2:-high}" \
+    --data-binary @- "$url" >/dev/null 2>&1
 }
 
 # Remembers a yes/no condition, so an alert is sent when it starts and once when it ends, not every run.

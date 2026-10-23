@@ -196,8 +196,9 @@ cd ~/MuhallaReads && git pull
 sudo bash deploy/oracle/soc-setup.sh
 ```
 
-Alerts come on WhatsApp from the bot (free messages only) and, if you set `SOC_NTFY_URL`, instantly
-through the free ntfy app. See [security.md](security.md#security-monitor) for what it watches and
+Alerts come on WhatsApp from the bot (free messages only). For instant alerts on your phone, run
+`sudo muhallareads-soc ntfy`; to hear if the server dies, `sudo muhallareads-soc healthcheck` (both
+free, steps in security.md). See [security.md](security.md#security-monitor) for what it watches and
 what to do about an alert. `sudo muhallareads-soc` shows its status.
 
 ## Keeping it free

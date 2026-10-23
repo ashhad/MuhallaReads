@@ -118,9 +118,9 @@ if [[ -f /etc/muhallareads/soc.enabled ]]; then
   [[ -n $(find /var/log/caddy/access.log -mmin -1440 2>/dev/null) ]] && ok "The web log is being written (for CrowdSec)" ||
     meh "No web log in the last day (re-run setup.sh; see its messages)"
   [[ -n $(setting SOC_NTFY_URL) ]] && ok "Instant alerts go to your phone (ntfy)" ||
-    note "Alerts reach WhatsApp straight away only if you messaged the bot in the last day; set SOC_NTFY_URL for instant ones"
+    note "Alerts reach WhatsApp straight away only if you messaged the bot in the last day; for instant ones: sudo muhallareads-soc ntfy"
   [[ -n $(setting SOC_HEALTHCHECK_URL) ]] && ok "An outside service tells you if this server goes quiet" ||
-    note "Set SOC_HEALTHCHECK_URL (free at healthchecks.io) to hear if the server goes down"
+    note "To hear if the server goes down: sudo muhallareads-soc healthcheck (free at healthchecks.io)"
 else
   meh "The security monitor is off: sudo bash deploy/oracle/soc-setup.sh"
 fi
