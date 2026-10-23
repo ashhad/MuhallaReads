@@ -18,7 +18,7 @@ sudo muhallareads-security-check
 | Phone numbers leaking | Numbers are never sent to the website or to other members (only a number its owner shares on one request). Logs never contain numbers or message text |
 | Guessing a sign-in link or session | 192-bit random tokens; sign-in links work once, for 15 minutes; sessions end after 60 days unused; "Sign out on all devices" / `logout everywhere` |
 | Malicious page content (XSS) | Everything shown is escaped; a strict Content-Security-Policy blocks injected scripts; the page can't be framed |
-| Flooding the server | Request size limits (256 KB; 8 MB for photos), rate limits per IP and per member |
+| Flooding the server | Request size limits (256 KB; 8 MB for photos). Signed in: 60 requests and 30 book lookups a minute per member. Not signed in: 60 a minute per IP, and 5 failed sign-ins per 15 minutes per IP (successful sign-ins don't count, so neighbours sharing a network aren't locked out) |
 | Running up API bills | Photo scans: per-member daily limit, monthly photo and ₹ budget caps, admin alerts. WhatsApp: monthly template cap |
 | Tracking members via images | Book covers are only accepted from Open Library / archive.org / Google |
 | A bug in the app being used to take over the server | The app runs as its own user, can only write to its data folder, has no privileges, can't see other processes, devices or kernel settings (systemd sandbox) |

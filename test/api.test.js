@@ -263,15 +263,30 @@ test('sessions end after 60 days unused, and "sign out everywhere" ends them all
   assert.equal((await call('/api/me', { token: c })).status, 401);
 });
 
-test('repeated sign-in attempts are rate limited', async () => {
-  const app = createApp({ store: openDb(':memory:'), settings: { ...baseSettings, whatsapp: {} }, deps: { transport: null } });
+test('failed sign-ins are limited per address; successful ones and other members are not affected', async () => {
+  const s = openDb(':memory:');
+  const app = createApp({ store: s, settings: { ...baseSettings, whatsapp: {} }, deps: { transport: null } });
   const srv = await new Promise((r) => { const x = app.listen(0, () => r(x)); });
-  const url = `http://127.0.0.1:${srv.address().port}/api/login`;
-  const statuses = [];
-  for (let i = 0; i < 32; i++) {
-    statuses.push((await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{"code":"nope"}' })).status);
+  const port = srv.address().port;
+  const login = async (code) =>
+    (await fetch(`http://127.0.0.1:${port}/api/login`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ code }) })).status;
+  const m = s.createMember({ name: 'Lata', phone: '919812345678' });
+  try {
+    for (let i = 0; i < 3; i++) assert.equal(await login(s.createLoginCode(m.id)), 200); // successes don't count
+    const failures = [];
+    for (let i = 0; i < 6; i++) failures.push(await login('nope'));
+    assert.deepEqual(failures, [401, 401, 401, 401, 401, 429]);
+    assert.equal(await login(s.createLoginCode(m.id)), 429); // blocked for a while, even with a good link
+
+    // A signed-in member is limited to 60 requests a minute.
+    const token = s.createSession(m.id);
+    const statuses = [];
+    for (let i = 0; i < 61; i++) {
+      statuses.push((await fetch(`http://127.0.0.1:${port}/api/me`, { headers: { Authorization: `Bearer ${token}` } })).status);
+    }
+    assert.equal(statuses.at(-2), 200);
+    assert.equal(statuses.at(-1), 429);
+  } finally {
+    srv.close();
   }
-  srv.close();
-  assert.equal(statuses[0], 401);
-  assert.equal(statuses.at(-1), 429);
 });

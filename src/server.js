@@ -11,7 +11,7 @@ import { createLibrary, LibraryError } from './library.js';
 import { createNotifier } from './notifier.js';
 import { createPhotoLimits, PhotoLimitError } from './photos.js';
 import { createMetaTransport, whatsappRouter } from './whatsapp.js';
-import { securityHeaders, rateLimit, isAllowedCover } from './security.js';
+import { securityHeaders, rateLimit, failureLimit, isAllowedCover } from './security.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const root = path.join(here, '..');
@@ -56,7 +56,9 @@ export function createApp({ store, deps = {}, settings = config } = {}) {
       },
     }),
   );
-  app.use('/api', rateLimit({ windowMs: 60_000, max: 300 }));
+  // Rate limits. Without a sign-in we can only go by IP address, which many people can share (mobile
+  // networks, a building's Wi-Fi), so those limits are per IP; signed-in use is limited per member.
+  app.use(['/api/config', '/api/login'], rateLimit({ windowMs: 60_000, max: 60 }));
   app.use(whatsappRouter({ bot, transport, config: settings }));
 
   // ---------- public ----------
@@ -71,9 +73,14 @@ export function createApp({ store, deps = {}, settings = config } = {}) {
   });
 
   // Sign-in links come from the WhatsApp bot ("login"), so the web app never asks for a phone number.
-  const loginLimit = rateLimit({ windowMs: 10 * 60_000, max: 30, message: 'Too many sign-in attempts. Please wait a few minutes.' });
-  app.post('/api/login', loginLimit, (req, res) => {
+  const loginFailures = failureLimit({
+    windowMs: 15 * 60_000,
+    max: 5,
+    message: 'Too many sign-in links that didn’t work. Please wait 15 minutes, then send "login" to the bot.',
+  });
+  app.post('/api/login', loginFailures, (req, res) => {
     const memberId = store.consumeLoginCode(req.body?.code);
+    if (!memberId) req.failedAttempt();
     if (!memberId) throw new HttpError(401, 'That sign-in link has expired. Send "login" to the bot for a new one.');
     res.json({ token: store.createSession(memberId) });
   });
@@ -88,6 +95,8 @@ export function createApp({ store, deps = {}, settings = config } = {}) {
   };
   const api = express.Router();
   api.use(auth);
+  // A person using the app makes 30-60 requests a minute at most (searching as they type, switching tabs).
+  api.use(rateLimit({ windowMs: 60_000, max: 60, key: (req) => `m${req.member.id}` }));
   app.use('/api', api);
 
   const isAdmin = (m) => Boolean(settings.adminPhones?.includes(m.phone)) && m.status === 'active';
@@ -181,7 +190,7 @@ export function createApp({ store, deps = {}, settings = config } = {}) {
   });
 
   // Lookups call Google Books / Open Library on the server's quota, so each member gets a fair share.
-  const lookupLimit = rateLimit({ windowMs: 60_000, max: 60, key: (req) => `m${req.member.id}` });
+  const lookupLimit = rateLimit({ windowMs: 60_000, max: 30, key: (req) => `m${req.member.id}` });
   api.use(['/lookup', '/book-info'], lookupLimit);
 
   api.get('/books', (req, res) => {

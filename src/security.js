@@ -34,24 +34,51 @@ export function securityHeaders(_req, res, next) {
 }
 
 /**
- * At most `max` requests per `windowMs` for each key (an IP address or a member). Kept in memory,
- * which is plenty for one small server.
+ * Counts events per key (an IP address or a member) in fixed windows. Kept in memory, which is
+ * plenty for one small server.
  */
-export function rateLimit({ windowMs, max, key = (req) => req.ip, message = 'Too many requests. Please wait a minute and try again.' }) {
+function createCounter(windowMs) {
   const hits = new Map();
   setInterval(() => {
     const now = Date.now();
     for (const [k, v] of hits) if (v.reset <= now) hits.delete(k);
   }, windowMs).unref();
+  const entry = (k) => {
+    const now = Date.now();
+    let e = hits.get(k);
+    if (!e || e.reset <= now) hits.set(k, (e = { count: 0, reset: now + windowMs }));
+    return e;
+  };
+  return {
+    count: (k) => entry(k).count,
+    hit: (k) => ++entry(k).count,
+    retryAfter: (k) => String(Math.ceil((entry(k).reset - Date.now()) / 1000)),
+  };
+}
+
+const tooMany = (res, retryAfter, message) => res.set('Retry-After', retryAfter).status(429).json({ error: message });
+
+/** At most `max` requests per `windowMs` for each key. */
+export function rateLimit({ windowMs, max, key = (req) => req.ip, message = 'Too many requests. Please wait a minute and try again.' }) {
+  const counter = createCounter(windowMs);
   return (req, res, next) => {
     const k = key(req);
-    const now = Date.now();
-    let entry = hits.get(k);
-    if (!entry || entry.reset <= now) hits.set(k, (entry = { count: 0, reset: now + windowMs }));
-    if (++entry.count > max) {
-      res.set('Retry-After', String(Math.ceil((entry.reset - now) / 1000)));
-      return res.status(429).json({ error: message });
-    }
+    if (counter.hit(k) > max) return tooMany(res, counter.retryAfter(k), message);
+    next();
+  };
+}
+
+/**
+ * At most `max` *failed* attempts per `windowMs` for each key; successes don't count, so people
+ * sharing one IP (mobile networks, a building's Wi-Fi) aren't locked out by each other's sign-ins.
+ * The route calls `req.failedAttempt()` when an attempt fails.
+ */
+export function failureLimit({ windowMs, max, key = (req) => req.ip, message }) {
+  const counter = createCounter(windowMs);
+  return (req, res, next) => {
+    const k = key(req);
+    if (counter.count(k) >= max) return tooMany(res, counter.retryAfter(k), message);
+    req.failedAttempt = () => counter.hit(k);
     next();
   };
 }
