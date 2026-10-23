@@ -36,7 +36,8 @@ case ${1:-status} in
     done
     last=$(cat "$SOC_STATE/last-run" 2>/dev/null || echo 0)
     echo "  Last check: $(( ($(date +%s) - last) / 60 )) minutes ago"
-    echo "  Blocked now: $(cscli decisions list -o json 2>/dev/null | jq '[.[]?.decisions[]?] | length') addresses (plus the community blocklist)"
+    blocked=$(cscli decisions list -o json 2>/dev/null | jq '[.[]?.decisions[]?] | length')
+    echo "  Blocked now: ${blocked:-?} attacker$( [[ $blocked == 1 ]] || echo s ) caught here (see: sudo muhallareads-soc bans), plus the community blocklist"
     echo "  Phone alerts (ntfy): $( [[ -n $(setting SOC_NTFY_URL) ]] && echo on || echo 'off  → sudo muhallareads-soc ntfy' )"
     echo "  Dead-man's switch:   $( [[ -n $(setting SOC_HEALTHCHECK_URL) ]] && echo on || echo 'off  → sudo muhallareads-soc healthcheck' )"
     ;;
