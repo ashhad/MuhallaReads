@@ -22,7 +22,7 @@ sudo muhallareads-security-check
 | Running up API bills | Photo scans: per-member daily limit, monthly photo and ₹ budget caps, admin alerts. WhatsApp: monthly template cap |
 | Tracking members via images | Book covers are only accepted from Open Library / archive.org / Google |
 | A bug in the app being used to take over the server | The app runs as its own user, can only write to its data folder, has no privileges, can't see other processes, devices or kernel settings (systemd sandbox) |
-| Break-in over SSH | Key-only logins, plus a 6-digit code (`deploy/oracle/ssh-mfa.sh`); no passwords |
+| Break-in over SSH | Key-only logins, plus a 6-digit code (`deploy/oracle/ssh-mfa.sh`); no passwords; root can't log in over SSH at all (you log in as `ubuntu` and use `sudo`); unused services such as rpcbind are off |
 | Unpatched software | Ubuntu installs security updates daily; `npm audit` shows no known issues |
 | Losing the data | A daily database backup, kept 14 days, readable only by root and admins |
 

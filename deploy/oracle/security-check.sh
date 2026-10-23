@@ -15,6 +15,7 @@ pass=0 warn=0 fail=0
 ok()   { printf '  \033[32mPASS\033[0m  %s\n' "$*"; pass=$((pass + 1)); }
 meh()  { printf '  \033[33mWARN\033[0m  %s\n' "$*"; warn=$((warn + 1)); }
 bad()  { printf '  \033[31mFAIL\033[0m  %s\n' "$*"; fail=$((fail + 1)); }
+note() { printf '  \033[36mNOTE\033[0m  %s\n' "$*"; }
 section() { printf '\n\033[1m%s\033[0m\n' "$*"; }
 setting() { grep -E "^$1=" "$ENV_FILE" 2>/dev/null | tail -1 | cut -d= -f2-; }
 
@@ -23,7 +24,12 @@ setting() { grep -E "^$1=" "$ENV_FILE" 2>/dev/null | tail -1 | cut -d= -f2-; }
 section "SSH"
 sshd_t=$(sshd -T 2>/dev/null)
 grep -qi '^passwordauthentication no' <<<"$sshd_t" && ok "Passwords can't be used to log in" || bad "Password logins are allowed (set PasswordAuthentication no)"
-grep -qiE '^permitrootlogin (no|prohibit-password)' <<<"$sshd_t" && ok "Root can't log in with a password" || bad "Root can log in with a password"
+root_login=$(awk 'tolower($1) == "permitrootlogin" {print tolower($2)}' <<<"$sshd_t")
+case $root_login in
+  no) ok "Root can't log in over SSH" ;;
+  prohibit-password | without-password) meh "Root can log in over SSH with a key (never a password); re-run setup.sh to turn it off" ;;
+  *) bad "Root can log in over SSH with a password (PermitRootLogin $root_login)" ;;
+esac
 grep -qi '^authenticationmethods .*keyboard-interactive' <<<"$sshd_t" && ok "Two-factor SSH is on (key + code)" ||
   meh "Two-factor SSH is off: sudo bash deploy/oracle/ssh-mfa.sh"
 
@@ -49,7 +55,7 @@ if [[ -f $ENV_FILE ]]; then
     bad "WHATSAPP_APP_SECRET is empty: the bot refuses all messages until it's set"
   [[ $(setting PUBLIC_URL) == https://* ]] && ok "The site address uses HTTPS" || bad "PUBLIC_URL isn't https://"
   [[ -n $(setting ADMIN_PHONES) ]] && ok "Admins are set (they approve new members)" || meh "ADMIN_PHONES is empty: new members are let in without approval"
-  [[ -n $(setting ANTHROPIC_API_KEY) ]] && meh "Photo scanning is on: make sure the Anthropic Console has a monthly spend limit" || ok "Photo scanning is off (no paid API key on the server)"
+  [[ -n $(setting ANTHROPIC_API_KEY) ]] && note "Photo scanning is on: keep a monthly spend limit set in the Anthropic Console" || ok "Photo scanning is off (no paid API key on the server)"
 else
   bad "No settings file at $ENV_FILE"
 fi

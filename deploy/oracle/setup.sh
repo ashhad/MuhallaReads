@@ -127,6 +127,25 @@ chmod 640 /var/backups/muhallareads/*.db 2>/dev/null || true
 # The database too: only the app's own user.
 chmod 600 "$DATA_DIR"/*.db* 2>/dev/null || true
 
+step "Locking down SSH and unused services"
+# Root never logs in over SSH: you log in as ubuntu and use sudo. (Root isn't renamed; Ubuntu relies on
+# that name.) The change is checked with sshd -t before it takes effect, so it can't lock you out.
+SSH_DROPIN=/etc/ssh/sshd_config.d/05-muhallareads.conf
+if grep -qiE '^\s*Include\s+/etc/ssh/sshd_config\.d/' /etc/ssh/sshd_config; then
+  printf '%s\n' '# Written by MuhallaReads setup.sh' 'PermitRootLogin no' 'PasswordAuthentication no' > "$SSH_DROPIN"
+  if sshd -t 2>/dev/null; then
+    systemctl reload ssh 2>/dev/null || systemctl reload sshd 2>/dev/null || true
+  else
+    rm -f "$SSH_DROPIN"
+    echo "SSH settings didn't check out, so SSH was left unchanged."
+  fi
+fi
+# rpcbind (port 111) is only needed for NFS network drives, which this server doesn't use.
+if ! findmnt -rn -t nfs,nfs4 >/dev/null 2>&1; then
+  systemctl disable --now rpcbind.socket rpcbind.service >/dev/null 2>&1 || true
+  systemctl mask rpcbind.socket rpcbind.service >/dev/null 2>&1 || true
+fi
+
 # Security updates install automatically (Ubuntu's default; make sure it's on).
 apt-get install -y -qq unattended-upgrades >/dev/null
 echo 'APT::Periodic::Update-Package-Lists "1"; APT::Periodic::Unattended-Upgrade "1";' > /etc/apt/apt.conf.d/20auto-upgrades
