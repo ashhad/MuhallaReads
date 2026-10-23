@@ -83,6 +83,24 @@ if [[ -n $domain ]]; then
   grep -qi '^content-security-policy' <<<"$hdrs" && ok "Content-Security-Policy is sent" || meh "No Content-Security-Policy (update the app)"
   code=$(curl -s -o /dev/null -w '%{http_code}' -m 10 -X POST -H 'Content-Type: application/json' -d '{}' "https://$domain/webhooks/whatsapp")
   [[ $code == 401 ]] && ok "Unsigned WhatsApp webhook calls are rejected" || meh "Unsigned webhook call returned $code (expected 401)"
+  grep -qiE '^(server|x-powered-by):' <<<"$hdrs" && meh "The server announces its software (Server / X-Powered-By header)" || ok "The server doesn't announce its software"
+
+  # From the outside, as a visitor would see it.
+  redirect=$(curl -s -o /dev/null -w '%{http_code} %{redirect_url}' -m 10 "http://$domain/")
+  [[ $redirect == 30[18]\ https://* ]] && ok "Plain HTTP redirects to HTTPS" || bad "Plain HTTP doesn't redirect to HTTPS ($redirect)"
+  if curl -s -o /dev/null -m 10 --tlsv1.0 --tls-max 1.1 "https://$domain/" 2>/dev/null; then
+    bad "Old TLS 1.0/1.1 connections are accepted"
+  else
+    ok "Old TLS 1.0/1.1 connections are refused"
+  fi
+  exposed=''
+  for p in /.env /package.json /src/server.js /.git/config /node_modules/express/package.json /..%2fpackage.json /%2e%2e/%2e%2e/etc/passwd /fonts/..%2f..%2fpackage.json; do
+    body=$(curl -s -m 10 "https://$domain$p")
+    grep -qE '"dependencies"|ANTHROPIC|WHATSAPP_|\[core\]|root:x:0|import express' <<<"$body" && exposed+="$p "
+  done
+  [[ -z $exposed ]] && ok "Private files (.env, source code, .git, system files) aren't served" || bad "Private files are served: $exposed"
+  err=$(curl -s -m 10 -X PATCH -H 'Content-Type: application/json' -H 'Authorization: Bearer x' -d '{"broken": ' "https://$domain/api/me")
+  grep -qE 'at [A-Za-z].*\(|node_modules|/opt/muhallareads' <<<"$err" && bad "Errors reveal internal details" || ok "Errors don't reveal internal details"
 fi
 
 section "App sandbox"

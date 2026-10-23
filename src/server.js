@@ -208,14 +208,17 @@ export function createApp({ store, deps = {}, settings = config } = {}) {
   api.get('/my-books', (req, res) => res.json({ books: store.booksOf(req.member.id) }));
 
   // Suggestions while adding: ?isbn=… for a scanned barcode, ?q=… for typed text.
+  // Covers from outside sources are only passed on from the hosts we trust (see security.js).
+  const safeCover = (b) => ({ ...b, cover: isAllowedCover(b.cover) ? b.cover : null });
+
   api.get('/lookup', async (req, res) => {
-    const q = String(req.query.q || req.query.isbn || '').trim();
+    const q = String(req.query.q || req.query.isbn || '').trim().slice(0, 200);
     if (!q) return res.json({ results: [] });
     if (looksLikeIsbn(q)) {
       const hit = await lookupIsbn(q);
-      return res.json({ results: hit ? [hit] : [], isbn: normalizeIsbn(q) });
+      return res.json({ results: hit ? [safeCover(hit)] : [], isbn: normalizeIsbn(q) });
     }
-    res.json({ results: await searchBooks(q, 8) });
+    res.json({ results: (await searchBooks(q, 8)).map(safeCover) });
   });
 
   // Introduction, year, pages and genre for the book card. Looked up by the server (so Google never
@@ -273,7 +276,7 @@ export function createApp({ store, deps = {}, settings = config } = {}) {
     res.json({
       results: books.map(({ title, author, isbn, cover, sure = true, matched = true }) => {
         const unsure = !sure || !matched;
-        return { title, author, isbn: isbn || null, cover: cover || null, checked: !unsure, unsure };
+        return { title, author, isbn: isbn || null, cover: isAllowedCover(cover) ? cover : null, checked: !unsure, unsure };
       }),
     });
   });

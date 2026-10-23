@@ -290,3 +290,28 @@ test('failed sign-ins are limited per address; successful ones and other members
     srv.close();
   }
 });
+
+test('book suggestions only pass on covers from trusted hosts', async () => {
+  const s2 = openDb(':memory:');
+  const app2 = createApp({
+    store: s2,
+    settings: { ...baseSettings, whatsapp: {} },
+    deps: {
+      transport: null,
+      searchBooks: async () => [
+        { title: 'A', cover: 'javascript:alert(1)' },
+        { title: 'B', cover: 'https://evil.example/p.gif' },
+        { title: 'C', cover: 'https://covers.openlibrary.org/b/id/2-M.jpg' },
+      ],
+    },
+  });
+  const srv = await new Promise((r) => { const x = app2.listen(0, () => r(x)); });
+  try {
+    const token = s2.createSession(s2.createMember({ name: 'Mira', phone: '919811122233' }).id);
+    const res = await fetch(`http://127.0.0.1:${srv.address().port}/api/lookup?q=anything`, { headers: { Authorization: `Bearer ${token}` } });
+    const { results } = await res.json();
+    assert.deepEqual(results.map((b) => b.cover), [null, null, 'https://covers.openlibrary.org/b/id/2-M.jpg']);
+  } finally {
+    srv.close();
+  }
+});
