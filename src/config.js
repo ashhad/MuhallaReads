@@ -33,6 +33,8 @@ export const config = {
   // Added to 10-digit local numbers typed without a country code (admin script).
   defaultCountryCode: digits(env.DEFAULT_COUNTRY_CODE || '91'),
   dbPath: env.DB_PATH || path.join(env.DATA_DIR || 'data', 'muhallareads.db'),
+  // The security monitor's latest daily report (deploy/oracle/soc), for admins who send "security".
+  securityReportPath: path.join(env.DATA_DIR || 'data', 'security-report.txt'),
   // Public https URL of the web app, used in sign-in links sent over WhatsApp.
   publicUrl: (env.PUBLIC_URL || '').replace(/\/$/, ''),
   timeZone: env.TIME_ZONE || 'Asia/Kolkata',

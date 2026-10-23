@@ -103,6 +103,28 @@ if [[ -n $domain ]]; then
   grep -qE 'at [A-Za-z].*\(|node_modules|/opt/muhallareads' <<<"$err" && bad "Errors reveal internal details" || ok "Errors don't reveal internal details"
 fi
 
+section "Security monitor"
+if [[ -f /etc/muhallareads/soc.enabled ]]; then
+  systemctl is-active --quiet crowdsec && ok "CrowdSec is watching the SSH and web logs" ||
+    bad "CrowdSec isn't running: sudo systemctl status crowdsec"
+  systemctl is-active --quiet crowdsec-firewall-bouncer && nft list tables 2>/dev/null | grep -q crowdsec &&
+    ok "Attackers CrowdSec spots are blocked in the firewall" ||
+    bad "The CrowdSec firewall bouncer isn't blocking: sudo systemctl status crowdsec-firewall-bouncer"
+  systemctl is-active --quiet muhallareads-soc-watch.timer && systemctl is-active --quiet muhallareads-soc-report.timer &&
+    ok "Checks every 10 minutes and a daily report are scheduled" || bad "The monitor's timers are off: re-run setup.sh"
+  last=$(cat /var/lib/muhallareads-soc/last-run 2>/dev/null || echo 0)
+  (( $(date +%s) - last < 1800 )) && ok "The last check ran $(( ($(date +%s) - last) / 60 )) minutes ago" ||
+    bad "No check in the last 30 minutes: sudo journalctl -u muhallareads-soc-watch -n 20"
+  [[ -n $(find /var/log/caddy/access.log -mmin -1440 2>/dev/null) ]] && ok "The web log is being written (for CrowdSec)" ||
+    meh "No web log in the last day (re-run setup.sh; see its messages)"
+  [[ -n $(setting SOC_NTFY_URL) ]] && ok "Instant alerts go to your phone (ntfy)" ||
+    note "Alerts reach WhatsApp straight away only if you messaged the bot in the last day; set SOC_NTFY_URL for instant ones"
+  [[ -n $(setting SOC_HEALTHCHECK_URL) ]] && ok "An outside service tells you if this server goes quiet" ||
+    note "Set SOC_HEALTHCHECK_URL (free at healthchecks.io) to hear if the server goes down"
+else
+  meh "The security monitor is off: sudo bash deploy/oracle/soc-setup.sh"
+fi
+
 section "App sandbox"
 score=$(systemd-analyze security muhallareads 2>/dev/null | tail -1)
 [[ -n $score ]] && ok "systemd exposure: ${score#*: }" || meh "Couldn't rate the service sandbox"

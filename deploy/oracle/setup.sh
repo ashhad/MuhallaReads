@@ -6,6 +6,7 @@
 #
 # What it does: installs Node.js 22 and Caddy (automatic HTTPS), copies the app to /opt/muhallareads,
 # runs it as a systemd service, opens ports 80/443 in the VM firewall, and sets up daily backups.
+# Also keeps the security monitor up to date once deploy/oracle/soc-setup.sh has turned it on.
 # Safe to run again; it only changes what's needed.
 set -euo pipefail
 
@@ -25,6 +26,11 @@ die() { printf '\033[31m%s\033[0m\n' "$*" >&2; exit 1; }
 command -v apt-get >/dev/null || die "This script needs Ubuntu (pick the Canonical Ubuntu image on Oracle Cloud)."
 
 mkdir -p "$CONF_DIR"
+# The security monitor (deploy/oracle/soc-setup.sh), if it's on.
+SOC_STATE=/var/lib/muhallareads-soc
+SOC=$([[ -f $CONF_DIR/soc.enabled ]] && echo on || true)
+# Tell it an update is running, so the files and services this changes don't raise alarms.
+[[ -d $SOC_STATE ]] && touch "$SOC_STATE/updating"
 DOMAIN=${1:-$(cat "$CONF_DIR/domain" 2>/dev/null || true)}
 DOMAIN=${DOMAIN#https://}
 DOMAIN=${DOMAIN%%/*}
@@ -106,7 +112,43 @@ systemctl daemon-reload
 systemctl enable muhallareads >/dev/null 2>&1
 systemctl restart muhallareads
 
-cat > /etc/caddy/Caddyfile <<CADDY
+CADDY_LOG=''
+if [[ -n $SOC ]]; then
+  install -d -m 755 -o caddy -g caddy /var/log/caddy
+  [[ -f /var/log/caddy/access.log ]] || install -m 640 -o caddy -g adm /dev/null /var/log/caddy/access.log
+  # Read by CrowdSec to spot attacks. Visitors' addresses are kept 7 days; sign-in tokens, cookies, and
+  # what people search for, look up or join with are left out.
+  CADDY_LOG=$(cat <<'LOG'
+	log {
+		output file /var/log/caddy/access.log {
+			roll_size 20MiB
+			roll_keep 3
+			roll_keep_for 168h
+		}
+		format filter {
+			wrap json
+			fields {
+				request>headers>Authorization delete
+				request>headers>Cookie delete
+				request>headers>Referer delete
+				resp_headers>Set-Cookie delete
+				request>uri query {
+					delete q
+					delete isbn
+					delete title
+					delete author
+					delete join
+					delete hub.verify_token
+					delete hub.challenge
+				}
+			}
+		}
+	}
+LOG
+)
+fi
+write_caddyfile() {
+  cat > /etc/caddy/Caddyfile.new <<CADDY
 $DOMAIN {
 	encode gzip
 	header {
@@ -118,9 +160,17 @@ $DOMAIN {
 	request_body {
 		max_size 10MB
 	}
+$1
 	reverse_proxy 127.0.0.1:$PORT
 }
 CADDY
+}
+write_caddyfile "$CADDY_LOG"
+if [[ -n $CADDY_LOG ]] && ! caddy validate --config /etc/caddy/Caddyfile.new --adapter caddyfile >/dev/null 2>&1; then
+  echo "This Caddy version didn't accept the access-log settings, so the web log is off (SSH is still watched)."
+  write_caddyfile ''
+fi
+mv /etc/caddy/Caddyfile.new /etc/caddy/Caddyfile
 systemctl enable caddy >/dev/null 2>&1
 systemctl reload-or-restart caddy
 
@@ -161,6 +211,90 @@ echo 'APT::Periodic::Update-Package-Lists "1"; APT::Periodic::Unattended-Upgrade
 
 install -m 755 "$APP_DIR/deploy/oracle/security-check.sh" /usr/local/bin/muhallareads-security-check
 
+PUBLIC_IP=$(curl -fs -m 5 https://api.ipify.org || true)
+SOC_LIB=/usr/local/lib/muhallareads-soc
+SOC_UNITS="muhallareads-soc-watch.service muhallareads-soc-watch.timer muhallareads-soc-report.service muhallareads-soc-report.timer"
+if [[ -n $SOC ]]; then
+  step "Updating the security monitor"
+  install -d -m 755 "$SOC_LIB"
+  install -d -m 700 "$SOC_STATE"
+  # So the daily report can leave out the server's own visits (its security check).
+  [[ -n $PUBLIC_IP ]] && echo "$PUBLIC_IP" > "$SOC_STATE/self-ip"
+  install -m 644 "$APP_DIR/deploy/oracle/soc/lib.sh" "$SOC_LIB/lib.sh"
+  install -m 755 "$APP_DIR/deploy/oracle/soc/watch.sh" "$APP_DIR/deploy/oracle/soc/report.sh" "$SOC_LIB/"
+  install -m 755 "$APP_DIR/deploy/oracle/soc/soc.sh" /usr/local/bin/muhallareads-soc
+  for u in $SOC_UNITS; do install -m 644 "$APP_DIR/deploy/oracle/soc/$u" /etc/systemd/system/; done
+  cat > /etc/logrotate.d/muhallareads-caddy <<'ROTATE'
+# The web access log for the security monitor: one file a day, kept 7 days.
+/var/log/caddy/access.log {
+	su caddy caddy
+	daily
+	rotate 6
+	maxage 7
+	missingok
+	notifempty
+	compress
+	delaycompress
+	copytruncate
+}
+ROTATE
+
+  if [[ -d /etc/crowdsec ]]; then
+    # Whether CrowdSec already reads a log (its installer may have found it), not counting our own files.
+    acquired() {
+      local f
+      for f in /etc/crowdsec/acquis.yaml /etc/crowdsec/acquis.d/*.yaml; do
+        [[ -f $f && $f != */muhallareads-* ]] && grep -qs "$1" "$f" && return 0
+      done
+      return 1
+    }
+    install -d /etc/crowdsec/acquis.d /etc/crowdsec/parsers/s02-enrich
+    if acquired /var/log/caddy; then
+      rm -f /etc/crowdsec/acquis.d/muhallareads-caddy.yaml
+    else
+      printf '%s\n' '# Written by MuhallaReads setup.sh' 'filenames:' '  - /var/log/caddy/access.log' 'labels:' '  type: caddy' \
+        > /etc/crowdsec/acquis.d/muhallareads-caddy.yaml
+    fi
+    if acquired 'auth\.log\|_SYSTEMD_UNIT=ssh'; then
+      rm -f /etc/crowdsec/acquis.d/muhallareads-ssh.yaml
+    elif [[ -f /var/log/auth.log ]]; then
+      printf '%s\n' '# Written by MuhallaReads setup.sh' 'filenames:' '  - /var/log/auth.log' 'labels:' '  type: syslog' \
+        > /etc/crowdsec/acquis.d/muhallareads-ssh.yaml
+    else
+      printf '%s\n' '# Written by MuhallaReads setup.sh' 'source: journalctl' 'journalctl_filter:' '  - "_SYSTEMD_UNIT=ssh.service"' \
+        'labels:' '  type: syslog' > /etc/crowdsec/acquis.d/muhallareads-ssh.yaml
+    fi
+    # Never block this server itself (its daily security check visits the site from here, and pokes at
+    # it like an attacker would), the private network, or the admins' SOC_TRUSTED_IPS.
+    trusted=("127.0.0.0/8" "::1/128" "10.0.0.0/8")
+    for ip in $PUBLIC_IP $(grep -E '^SOC_TRUSTED_IPS=' "$ENV_FILE" | tail -1 | cut -d= -f2- | tr ",\"'" '   '); do
+      if [[ $ip =~ ^[0-9.]+(/[0-9]{1,2})?$ ]]; then trusted+=("$ip"); [[ $ip == */* ]] || trusted[-1]+=/32
+      elif [[ $ip =~ ^[0-9a-fA-F:]+(/[0-9]{1,3})?$ ]]; then trusted+=("$ip"); [[ $ip == */* ]] || trusted[-1]+=/128
+      else echo "Ignoring \"$ip\" in SOC_TRUSTED_IPS (not an address)"
+      fi
+    done
+    {
+      echo '# Written by MuhallaReads setup.sh (re-run it after changing SOC_TRUSTED_IPS)'
+      echo 'name: muhallareads/whitelist'
+      echo 'description: "This server and the admins trusted addresses"'
+      echo 'whitelist:'
+      echo '  reason: "this server or a trusted address"'
+      echo '  cidr:'
+      printf '    - "%s"\n' "${trusted[@]}"
+    } > /etc/crowdsec/parsers/s02-enrich/muhallareads-whitelist.yaml
+    if crowdsec -t >/dev/null 2>&1; then
+      systemctl reload-or-restart crowdsec
+    else
+      rm -f /etc/crowdsec/acquis.d/muhallareads-*.yaml /etc/crowdsec/parsers/s02-enrich/muhallareads-whitelist.yaml
+      echo "CrowdSec didn't accept the new settings, so they were left out. See: sudo crowdsec -t"
+    fi
+  fi
+  systemctl daemon-reload
+  systemctl enable --now muhallareads-soc-watch.timer muhallareads-soc-report.timer >/dev/null 2>&1
+elif [[ -f /etc/systemd/system/muhallareads-soc-watch.timer ]]; then
+  systemctl disable --now muhallareads-soc-watch.timer muhallareads-soc-report.timer >/dev/null 2>&1 || true
+fi
+
 # Admin helper: sudo muhallareads-login <whatsapp number> [display name]  → one-time website sign-in link
 cat > /usr/local/bin/muhallareads-login <<'HELPER'
 #!/bin/sh
@@ -176,7 +310,11 @@ done
 curl -fs "http://127.0.0.1:$PORT/api/config" >/dev/null ||
   die "The app didn't start. See the log with:  journalctl -u muhallareads -n 50"
 
-PUBLIC_IP=$(curl -fs -m 5 https://api.ipify.org || echo "your VM's public IP")
+# Everything this update changed is now the normal state the security monitor compares against.
+[[ -n $SOC ]] && "$SOC_LIB/watch.sh" --rebaseline
+[[ -n $PUBLIC_IP ]] || PUBLIC_IP="your VM's public IP"
+if [[ -n $SOC ]]; then MONITOR="sudo muhallareads-soc   (CrowdSec, alerts, daily report)"
+else MONITOR="off; turn it on with: sudo bash deploy/oracle/soc-setup.sh"; fi
 cat <<DONE
 
 ✅ MuhallaReads is running.
@@ -191,4 +329,5 @@ cat <<DONE
   Backups:   /var/backups/muhallareads (daily, kept 14 days)
   Update:    git pull && sudo bash deploy/oracle/setup.sh
   Security:  sudo muhallareads-security-check
+  Monitor:   $MONITOR
 DONE

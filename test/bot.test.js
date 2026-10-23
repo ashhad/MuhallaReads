@@ -1,5 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { cleanName } from '../src/bot.js';
 import { LibraryError } from '../src/library.js';
 import { makeWorld, AYESHA, BILAL, CHAND } from './helpers.js';
@@ -350,4 +353,13 @@ test('"logout everywhere" ends every web session', async () => {
   const token = w.store.createSession(w.member(BILAL).id);
   assert.match(await w.say(BILAL, 'logout everywhere'), /Signed out of the app on every device/);
   assert.equal(w.store.memberBySession(token), undefined);
+});
+
+test('admins can read the security report on WhatsApp; nobody else can', async () => {
+  const securityReportPath = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'mr-')), 'security-report.txt');
+  const w = await twoMembers({ settings: { securityReportPath } });
+  assert.match(await w.say(AYESHA, 'security'), /No security report yet/);
+  fs.writeFileSync(securityReportPath, '🛡️ *MohallaReads security report*\n🔐 SSH: 0 logins\n');
+  assert.match(await w.say(AYESHA, 'security'), /security report\*\n🔐 SSH: 0 logins$/);
+  assert.doesNotMatch(await w.say(BILAL, 'security'), /SSH/);
 });

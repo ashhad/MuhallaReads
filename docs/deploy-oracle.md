@@ -185,6 +185,21 @@ the window that's still open.
 locked out: Compute → Instances → your VM → **Console connection** → Launch Cloud Shell connection,
 log in as `ubuntu` with that password, and run `sudo bash ~/MuhallaReads/deploy/oracle/ssh-mfa.sh --undo`.
 
+## Security monitor (recommended)
+
+A small security operations centre that runs on the VM for free: CrowdSec blocks attackers in the
+firewall, and you get alerts (SSH logins, changed system files, new open ports, stopped services, a
+certificate that isn't renewing) and a short report every morning:
+
+```bash
+cd ~/MuhallaReads && git pull
+sudo bash deploy/oracle/soc-setup.sh
+```
+
+Alerts come on WhatsApp from the bot (free messages only) and, if you set `SOC_NTFY_URL`, instantly
+through the free ntfy app. See [security.md](security.md#security-monitor) for what it watches and
+what to do about an alert. `sudo muhallareads-soc` shows its status.
+
 ## Keeping it free
 
 - **The VM** costs nothing while you stay within Always Free limits. Oracle may *reclaim* Always

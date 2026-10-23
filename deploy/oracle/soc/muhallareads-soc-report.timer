@@ -1,0 +1,10 @@
+[Unit]
+Description=Send the MohallaReads security report every morning
+
+[Timer]
+# The server's local time (setup for India: IST).
+OnCalendar=*-*-* 08:55:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target

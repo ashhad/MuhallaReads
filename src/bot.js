@@ -2,6 +2,7 @@
 // Everything else (finding, adding, requesting, chatting) happens in the web app; any other message
 // gets a button that signs the member in there.
 // Members only ever see each other's display names. Phone numbers stay on the server.
+import fs from 'node:fs';
 import { who, LibraryError, approvalTag } from './library.js';
 import { placeOf } from './db.js';
 
@@ -32,7 +33,7 @@ export function helpText(communityName, { admin = false, photos = false } = {}) 
     '🔔 `alerts off` / `alerts on`: messages when neighbours add new books',
     '🔒 `logout everywhere`: sign out of the app on all devices (e.g. a lost phone)',
     '🗑️ `delete me`: delete your account and all your data',
-    ...(admin ? ['', '🛠️ Admin: `pending` · `approve 12` · `decline 12` · `stats` · `members` · `remove member 12`'] : []),
+    ...(admin ? ['', '🛠️ Admin: `pending` · `approve 12` · `decline 12` · `stats` · `members` · `remove member 12` · `security`'] : []),
     '',
     '🔒 Your number is never shown to anyone.',
   ].join('\n');
@@ -237,6 +238,23 @@ export function createBot({ store, library, notifier, settings }) {
           `📊 ${s.members} members${s.pending ? ` (+${s.pending} waiting for approval)` : ''} · ${s.books} books · ${s.loans} active loans\n` +
             `WhatsApp this month: ${u.templates}/${settings.monthlyTemplateLimit} paid templates (≈ ₹${(u.templates * 0.136).toFixed(2)}), ${u.service} free replies\n` +
             `Photo scans this month: ${u.photos}/${settings.photoMonthlyLimit} photos, ₹${(u.photo_cost * settings.usdInrRate).toFixed(2)} of the ₹${settings.photoMonthlyBudgetInr.toFixed(2)} budget`,
+        );
+      },
+    ],
+    [
+      /^security$/i,
+      (m, _, reply) => {
+        if (!isAdmin(m)) return false;
+        let report = '';
+        try {
+          report = fs.readFileSync(settings.securityReportPath, 'utf8').trim();
+        } catch {
+          // no report yet
+        }
+        return reply(
+          report
+            ? clip(report)
+            : "🛡️ No security report yet. Once the security monitor is on (deploy/oracle/soc-setup.sh), there's a new one every morning.",
         );
       },
     ],

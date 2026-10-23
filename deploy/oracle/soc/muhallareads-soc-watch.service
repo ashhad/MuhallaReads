@@ -1,0 +1,10 @@
+[Unit]
+Description=MohallaReads security monitor: checks every 10 minutes
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/lib/muhallareads-soc/watch.sh
+Nice=10
+IOSchedulingClass=idle
+TimeoutStartSec=5min
