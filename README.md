@@ -74,6 +74,8 @@ npm run login-link -- 9800000001 "Ayesha (Block C)"
 
 ## Deploy
 
+**Security:** see [docs/security.md](docs/security.md) for what's protected and a checklist.
+
 **Free option:** [Oracle Cloud Always Free VM](docs/deploy-oracle.md). A step-by-step guide and a
 one-command setup script (`deploy/oracle/setup.sh`) cover HTTPS, auto-restart and daily backups.
 
@@ -148,6 +150,7 @@ src/db.js         SQLite storage (node:sqlite)
 src/lookup.js     book details from Open Library, with Google Books as fallback
 src/vision.js     finding books in photos with Claude (and what each call cost)
 src/photos.js     hard limits and cost alerts for photo scanning
+src/security.js   security headers, rate limits, trusted cover hosts
 scripts/          admin helpers
 deploy/oracle/    free-hosting setup script, backups, two-factor SSH
 ```

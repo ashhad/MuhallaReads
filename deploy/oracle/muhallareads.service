@@ -13,12 +13,32 @@ ExecStart=/usr/bin/node --disable-warning=ExperimentalWarning src/server.js
 Restart=always
 RestartSec=5
 
-# Sandboxing: the app can only write to its data directory.
+# Sandboxing: even if the app were compromised, it can only write to its data directory, has no
+# special privileges, can't see other processes, devices or the kernel's settings, and can only make
+# network connections (no raw sockets). Check with: systemd-analyze security muhallareads
 NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=true
 PrivateTmp=true
+PrivateDevices=true
 ReadWritePaths=/var/lib/muhallareads
+UMask=0077
+CapabilityBoundingSet=
+AmbientCapabilities=
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+ProtectProc=invisible
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+SystemCallArchitectures=native
+# (Not MemoryDenyWriteExecute: Node's JavaScript engine needs it.)
 
 [Install]
 WantedBy=multi-user.target

@@ -4,7 +4,7 @@ set -e
 DB=/var/lib/muhallareads/muhallareads.db
 DIR=/var/backups/muhallareads
 [ -f "$DB" ] || exit 0
-mkdir -p "$DIR"
+mkdir -p -m 750 "$DIR"
 OUT="$DIR/muhallareads-$(date +%F).db"
 sqlite3 "$DB" ".backup '$OUT'"
 chgrp adm "$OUT" && chmod 640 "$OUT"

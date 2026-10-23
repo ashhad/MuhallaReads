@@ -159,6 +159,11 @@ sudo chown muhallareads:muhallareads /var/lib/muhallareads/muhallareads.db
 sudo systemctl start muhallareads
 ```
 
+## Security
+
+See [security.md](security.md) for what's protected and a short checklist (two-factor on your
+accounts, restricting the API keys). Check the server any time with `sudo muhallareads-security-check`.
+
 ## Two-factor SSH (recommended)
 
 Make logging in to the VM need **both** your SSH key **and** a 6-digit code from an authenticator

@@ -109,6 +109,11 @@ systemctl restart muhallareads
 cat > /etc/caddy/Caddyfile <<CADDY
 $DOMAIN {
 	encode gzip
+	header {
+		# Browsers only ever use HTTPS for this site from now on.
+		Strict-Transport-Security "max-age=31536000"
+		-Server
+	}
 	reverse_proxy 127.0.0.1:$PORT
 }
 CADDY
@@ -116,6 +121,17 @@ systemctl enable caddy >/dev/null 2>&1
 systemctl reload-or-restart caddy
 
 install -m 755 "$APP_DIR/deploy/oracle/backup.sh" /etc/cron.daily/muhallareads-backup
+# Backups hold members' phone numbers: only root and the admin group (adm) may read them.
+install -d -m 750 -o root -g adm /var/backups/muhallareads
+chmod 640 /var/backups/muhallareads/*.db 2>/dev/null || true
+# The database too: only the app's own user.
+chmod 600 "$DATA_DIR"/*.db* 2>/dev/null || true
+
+# Security updates install automatically (Ubuntu's default; make sure it's on).
+apt-get install -y -qq unattended-upgrades >/dev/null
+echo 'APT::Periodic::Update-Package-Lists "1"; APT::Periodic::Unattended-Upgrade "1";' > /etc/apt/apt.conf.d/20auto-upgrades
+
+install -m 755 "$APP_DIR/deploy/oracle/security-check.sh" /usr/local/bin/muhallareads-security-check
 
 # Admin helper: sudo muhallareads-login <whatsapp number> [display name]  → one-time website sign-in link
 cat > /usr/local/bin/muhallareads-login <<'HELPER'
@@ -146,4 +162,5 @@ cat <<DONE
   Logs:      journalctl -u muhallareads -f
   Backups:   /var/backups/muhallareads (daily, kept 14 days)
   Update:    git pull && sudo bash deploy/oracle/setup.sh
+  Security:  sudo muhallareads-security-check
 DONE
