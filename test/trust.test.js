@@ -1,4 +1,4 @@
-// Trust: badges, verified neighbours ("Signed copy"), books lent only to them, and hand-overs.
+// Trust: badges, books lent only to "Never overdue" readers, member cards, and hand-overs.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -47,48 +47,24 @@ test('badges are earned: Fresh off the press, Never overdue, Bestseller, Classic
   for (let i = 0; i < 5; i++) await lendAndReturn(w, BILAL, CHAND, `Lent ${i}`);
   assert.deepEqual(badges(w, BILAL), ['neverOverdue', 'bestseller', 'fresh']);
 
-  await w.say(AYESHA, `verify ${w.member(BILAL).id}`);
   w.time.now += 91 * DAY;
-  assert.deepEqual(badges(w, BILAL), ['classic', 'signed', 'neverOverdue', 'bestseller']);
+  assert.deepEqual(badges(w, BILAL), ['classic', 'neverOverdue', 'bestseller']);
 
   // One late return, and "Never overdue" (and so Classic) is gone.
   await lendAndReturn(w, AYESHA, BILAL, 'Late one', { late: true });
-  assert.deepEqual(badges(w, BILAL), ['signed', 'bestseller']);
+  assert.deepEqual(badges(w, BILAL), ['bestseller']);
 });
 
-test('a Signed copy: an admin verifies, or two verified neighbours from the same building vouch', async () => {
-  const w = await world();
-  const id = (phone) => w.member(phone).id;
-  assert.ok(w.library.isVerified(w.member(AYESHA))); // admins are verified neighbours
-
-  await assert.rejects(w.library.vouch(w.member(BILAL), id(RIYA)), /Only verified neighbours/);
-  assert.match(await w.say(AYESHA, `verify ${id(BILAL)}`), /Bilal \(Green Park Tower, Saket\) is now a \*Signed copy\*/);
-  await w.say(AYESHA, `verify ${id(CHAND)}`);
-  await w.say(AYESHA, `verify ${id(DEV)}`);
-  assert.match(await w.say(BILAL, `verify ${id(RIYA)}`), /happen in the app/); // not an admin
-
-  await assert.rejects(w.library.vouch(w.member(DEV), id(RIYA)), /Only verified neighbours from Green Park Tower/);
-  assert.deepEqual(await w.library.vouch(w.member(BILAL), id(RIYA)), { verified: false, vouches: 1 });
-  assert.deepEqual(await w.library.vouch(w.member(BILAL), id(RIYA)), { verified: false, vouches: 1 }); // once each
-  w.transport.clear();
-  assert.deepEqual(await w.library.vouch(w.member(CHAND), id(RIYA)), { verified: true, vouches: 2 });
-  assert.ok(badges(w, RIYA).includes('signed'));
-  assert.match(w.transport.to(RIYA)[0].text, /You're now a \*Signed copy\*: two neighbours confirmed you live in Green Park Tower, Saket/);
-
-  // Moving away takes the badge with it; an admin can also take it back.
-  w.store.setPlace(id(RIYA), { building: 'Lotus Heights', locality: 'Saket' });
-  assert.ok(!badges(w, RIYA).includes('signed'));
-  await w.say(AYESHA, `unverify ${id(CHAND)}`);
-  assert.ok(!badges(w, CHAND).includes('signed'));
-});
-
-test('an owner can lend a book only to verified neighbours', async () => {
+test('an owner can lend a book only to Never overdue readers', async () => {
   const w = await world();
   const { added } = await w.library.addBooks(w.member(AYESHA), [{ title: 'First Edition' }]);
-  w.store.setVerifiedOnly(w.member(AYESHA).id, added[0].id, true);
-  assert.equal(w.store.search('first edition')[0].copies[0].verifiedOnly, true);
-  await assert.rejects(w.library.want(w.member(BILAL), added[0].id), /Ayesha lends \*First Edition\* only to verified neighbours/);
-  await w.say(AYESHA, `verify ${w.member(BILAL).id}`);
+  w.store.setNeverOverdueOnly(w.member(AYESHA).id, added[0].id, true);
+  assert.equal(w.store.search('first edition')[0].copies[0].neverOverdueOnly, true);
+  await assert.rejects(
+    w.library.want(w.member(BILAL), added[0].id),
+    /Ayesha lends \*First Edition\* only to 📗 Never overdue readers: people who've returned 3 or more books, all on time/,
+  );
+  for (let i = 0; i < 3; i++) await lendAndReturn(w, CHAND, BILAL, `Borrowed ${i}`);
   assert.equal((await w.library.want(w.member(BILAL), added[0].id)).status, 'pending');
 });
 
@@ -175,25 +151,40 @@ test('member cards show badges and counts, never a phone number', async () => {
     const card = await call(`/api/members/${bilal.id}`, admin.token);
     assert.equal(card.data.profile.name, 'Bilal');
     assert.deepEqual(card.data.profile.badges, ['fresh']);
-    assert.equal(card.data.profile.canVouch, true); // an admin can verify anyone
+    assert.equal(card.data.profile.books, 0);
     assert.doesNotMatch(card.raw, /9198000/);
-    assert.equal((await call(`/api/members/${admin.id}`, bilal.token)).data.profile.canVouch, false);
-
-    const vouched = await call(`/api/members/${bilal.id}/vouch`, admin.token, { method: 'POST' });
-    assert.equal(vouched.data.verified, true);
-    assert.equal(vouched.data.profile.canUnverify, true);
-    assert.equal((await call('/api/me', bilal.token)).data.member.verified, true);
-    assert.equal((await call(`/api/members/${bilal.id}/verify`, bilal.token, { method: 'POST', body: { verified: false } })).status, 403);
-    await call(`/api/members/${bilal.id}/verify`, admin.token, { method: 'POST', body: { verified: false } });
-    assert.equal((await call('/api/me', bilal.token)).data.member.verified, false);
+    assert.equal((await call(`/api/members/${bilal.id}`, bilal.token)).data.profile.isMe, true);
+    assert.deepEqual((await call('/api/me', bilal.token)).data.member.badges, ['fresh']);
 
     const book = await call('/api/books', admin.token, { method: 'POST', body: { books: [{ title: 'Dune' }] } });
     const bookId = book.data.added[0].id;
-    assert.equal((await call(`/api/books/${bookId}`, admin.token, { method: 'PATCH', body: { verifiedOnly: true } })).data.book.verified_only, 1);
+    const only = await call(`/api/books/${bookId}`, admin.token, { method: 'PATCH', body: { neverOverdueOnly: true } });
+    assert.equal(only.data.book.never_overdue_only, 1);
+    assert.equal((await call(`/api/books/${bookId}`, bilal.token, { method: 'PATCH', body: { neverOverdueOnly: false } })).status, 404); // not his
     const refused = await call('/api/requests', bilal.token, { method: 'POST', body: { bookId } });
     assert.equal(refused.status, 400);
-    assert.match(refused.data.error, /only to verified neighbours/);
+    assert.match(refused.data.error, /only to 📗 Never overdue readers/);
   } finally {
     srv.close();
   }
+});
+
+test('upgrading from the short-lived "verified neighbours" version keeps book choices, drops vouches', () => {
+  const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'mr-')), 'old.db');
+  let s = openDb(file);
+  const a = s.createMember({ name: 'A', phone: '919811100001' });
+  const book = s.addBooks(a.id, [{ title: 'Treasured' }]).added[0];
+  s.setNeverOverdueOnly(a.id, book.id, true);
+  // As that version stored it:
+  s.db.exec('ALTER TABLE books RENAME COLUMN never_overdue_only TO verified_only');
+  s.db.exec("ALTER TABLE members ADD COLUMN verified_place TEXT; ALTER TABLE members ADD COLUMN verified_at TEXT; ALTER TABLE members ADD COLUMN verified_by INTEGER");
+  s.db.exec('CREATE TABLE vouches (member_id INTEGER, voucher_id INTEGER, building TEXT, created_at TEXT)');
+  s.db.close();
+
+  s = openDb(file);
+  assert.equal(s.bookById(book.id).never_overdue_only, 1);
+  const memberCols = s.db.prepare('PRAGMA table_info(members)').all().map((c) => c.name);
+  assert.ok(!memberCols.includes('verified_place'));
+  assert.equal(s.db.prepare("SELECT COUNT(*) AS n FROM sqlite_master WHERE name = 'vouches'").get().n, 0);
+  s.db.close();
 });

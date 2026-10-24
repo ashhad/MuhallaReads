@@ -34,7 +34,7 @@ export function helpText(communityName, { admin = false, photos = false } = {}) 
     '🔔 `alerts off` / `alerts on`: messages when neighbours add new books',
     '🔒 `logout everywhere`: sign out of the app on all devices (e.g. a lost phone)',
     '🗑️ `delete me`: delete your account and all your data',
-    ...(admin ? ['', '🛠️ Admin: `pending` · `approve 12` · `decline 12` · `verify 12` · `stats` · `members` · `remove member 12` · `security`'] : []),
+    ...(admin ? ['', '🛠️ Admin: `pending` · `approve 12` · `decline 12` · `stats` · `members` · `remove member 12` · `security`'] : []),
     '',
     '🔒 Your number stays private unless you choose to share it.',
   ].join('\n');
@@ -279,20 +279,6 @@ export function createBot({ store, library, notifier, settings }) {
             `WhatsApp this month: ${u.templates}/${settings.monthlyTemplateLimit} paid templates (≈ ₹${(u.templates * 0.136).toFixed(2)}), ${u.service} free replies\n` +
             `Photo scans this month: ${u.photos}/${settings.photoMonthlyLimit} photos, ₹${(u.photo_cost * settings.usdInrRate).toFixed(2)} of the ₹${settings.photoMonthlyBudgetInr.toFixed(2)} budget`,
         );
-      },
-    ],
-    [
-      /^(verify|unverify)\s+#?(\d+)$/i,
-      async (m, x, reply) => {
-        if (!isAdmin(m)) return false;
-        const on = x[1].toLowerCase() === 'verify';
-        try {
-          const target = await library.setVerified(m, Number(x[2]), on);
-          return reply(on ? `✍️ ${who(target)} is now a *Signed copy* (verified neighbour).` : `Took back ${target.name}'s Signed copy badge.`);
-        } catch (err) {
-          if (err instanceof LibraryError) return reply(err.message);
-          throw err;
-        }
       },
     ],
     [

@@ -2,7 +2,7 @@
 // notifications, each with a button that opens the right page of the app.
 // Nobody's phone number is ever revealed unless they explicitly choose to share it with one person.
 import crypto from 'node:crypto';
-import { matchesQuery, normText, placeOf, plainLine, queryWords } from './db.js';
+import { matchesQuery, placeOf, plainLine, queryWords } from './db.js';
 import { agreedToTerms } from './terms.js';
 import { BADGE_RULES, BADGES, badgeLine } from './badges.js';
 
@@ -62,11 +62,6 @@ export function createLibrary({ store, notifier, settings, clock = () => new Dat
   /** Most books one member may have borrowed at a time. */
   const maxBorrowed = () => settings.maxBorrowed ?? 2;
 
-  const isAdmin = (m) => Boolean(m && settings.adminPhones?.includes(m.phone)) && m.status === 'active';
-
-  /** A "Signed copy": an admin, or verified at the building/locality they still give. */
-  const isVerified = (m) => Boolean(m) && (isAdmin(m) || (Boolean(m.verified_place) && m.verified_place === normText(placeOf(m))));
-
   /** The badges a member has earned (keys of BADGES), most special first. */
   function badgesFor(memberOrId) {
     const m = typeof memberOrId === 'object' ? memberOrId : store.memberById(memberOrId);
@@ -75,18 +70,17 @@ export function createLibrary({ store, notifier, settings, clock = () => new Dat
     const r = store.memberRecord(m.id, at.toISOString());
     const days = (at - new Date(m.created_at)) / DAY;
     const earned = {
-      signed: isVerified(m),
       neverOverdue: r.returned >= BADGE_RULES.onTimeReturns && r.onTime === r.returned && !r.overdue,
       bestseller: r.lent >= BADGE_RULES.lends,
       fresh: days < BADGE_RULES.freshDays,
     };
-    earned.classic = earned.signed && earned.neverOverdue && earned.bestseller && days >= BADGE_RULES.classicDays;
+    earned.classic = earned.neverOverdue && earned.bestseller && days >= BADGE_RULES.classicDays;
     return Object.keys(BADGES).filter((k) => earned[k]);
   }
 
   /**
    * What a lender sees about someone asking to borrow: "Returned 4 of 4 on time · has 1 book now ·
-   * invited by Ayesha · ✍️ Signed copy". Facts only, so it stays friendly.
+   * invited by Ayesha · 📗 Never overdue". Facts only, so it stays friendly.
    */
   function borrowerRecord(memberId) {
     const r = store.memberRecord(memberId, clock().toISOString());
@@ -105,68 +99,6 @@ export function createLibrary({ store, notifier, settings, clock = () => new Dat
     return text.charAt(0).toUpperCase() + text.slice(1);
   }
 
-  // ---------- verified neighbours ("Signed copy") ----------
-
-  async function markVerified(target, by) {
-    store.setVerified(target.id, { place: normText(placeOf(target)), by: by?.id ?? null });
-    await notifier.notify(target.id, {
-      text:
-        `✍️ You're now a *Signed copy*: ${by ? 'an admin' : 'two neighbours'} confirmed you live in ${placeOf(target)}. ` +
-        'Neighbours see the badge next to your name.',
-      optional: true,
-    });
-  }
-
-  /** An admin marks a member as a verified neighbour (or takes it back). */
-  async function setVerified(admin, targetId, on) {
-    if (!isAdmin(admin)) throw new LibraryError('Only admins can verify neighbours.');
-    const target = store.memberById(Number(targetId));
-    if (!target || target.status !== 'active') throw new LibraryError('No such member.');
-    if (on) {
-      if (!placeOf(target)) throw new LibraryError(`${target.name} hasn't given a building or locality yet.`);
-      await markVerified(target, admin);
-    } else {
-      store.setVerified(target.id, {});
-    }
-    return store.memberById(target.id);
-  }
-
-  /**
-   * A verified neighbour vouches that someone lives in their building. Two such vouches make them a
-   * Signed copy; an admin's vouch does it alone.
-   * @returns {Promise<{verified: boolean, vouches: number}>}
-   */
-  async function vouch(voucher, targetId) {
-    const target = store.memberById(Number(targetId));
-    if (!target || target.status !== 'active') throw new LibraryError('No such member.');
-    if (target.id === voucher.id) throw new LibraryError("You can't vouch for yourself.");
-    if (isVerified(target)) return { verified: true, vouches: 0 };
-    if (isAdmin(voucher)) {
-      await setVerified(voucher, target.id, true);
-      return { verified: true, vouches: 0 };
-    }
-    if (!isVerified(voucher)) throw new LibraryError('Only verified neighbours (✍️ Signed copy) can vouch for others.');
-    const building = normText(target.building);
-    if (!building || building !== normText(voucher.building)) {
-      throw new LibraryError(
-        target.building
-          ? `Only verified neighbours from ${target.building} can vouch for ${target.name}.`
-          : `${target.name} hasn't given a building, so only an admin can verify them.`,
-      );
-    }
-    store.addVouch(target.id, voucher.id, building);
-    // Count vouchers who are still verified and still in that building.
-    const vouches = store
-      .vouchesFor(target.id, building)
-      .map((id) => store.memberById(id))
-      .filter((v) => isVerified(v) && normText(v.building) === building).length;
-    if (vouches >= BADGE_RULES.vouches) {
-      await markVerified(target, null);
-      return { verified: true, vouches };
-    }
-    return { verified: false, vouches };
-  }
-
   /** What any member may see about another: name, place, badges and counts. Never a phone number. */
   function profileOf(viewer, targetId) {
     const target = store.memberById(Number(targetId));
@@ -175,10 +107,6 @@ export function createLibrary({ store, notifier, settings, clock = () => new Dat
     }
     const r = store.memberRecord(target.id, clock().toISOString());
     const inviter = target.referred_by ? store.memberById(target.referred_by) : null;
-    const verified = isVerified(target);
-    const building = normText(target.building);
-    const vouched = Boolean(building) && store.vouchesFor(target.id, building).includes(viewer.id);
-    const isMe = target.id === viewer.id;
     return {
       id: target.id,
       name: target.name,
@@ -189,13 +117,7 @@ export function createLibrary({ store, notifier, settings, clock = () => new Dat
       books: r.books,
       lent: r.lent,
       returned: r.returned,
-      isMe,
-      verified,
-      vouched,
-      canVouch:
-        !isMe && !verified && !vouched &&
-        (isAdmin(viewer) || (isVerified(viewer) && Boolean(building) && normText(viewer.building) === building)),
-      canUnverify: !isMe && verified && isAdmin(viewer) && !isAdmin(target),
+      isMe: target.id === viewer.id,
     };
   }
 
@@ -210,10 +132,10 @@ export function createLibrary({ store, notifier, settings, clock = () => new Dat
     if (book.owner_id === borrower.id) throw new LibraryError('That one is your own copy 🙂');
     if (!agreedToTerms(borrower)) throw new LibraryError('Please agree to the Terms first.');
     if (store.isBlocked(borrower.id, book.owner_id)) throw new LibraryError("You can't request this book.");
-    if (book.verified_only && !isVerified(borrower)) {
+    if (book.never_overdue_only && !badgesFor(borrower).includes('neverOverdue')) {
       throw new LibraryError(
-        `${store.memberById(book.owner_id)?.name || 'The owner'} lends *${book.title}* only to verified neighbours (✍️ Signed copy). ` +
-          'An admin, or two verified neighbours from your building, can vouch for you.',
+        `${store.memberById(book.owner_id)?.name || 'The owner'} lends *${book.title}* only to 📗 Never overdue readers: ` +
+          `people who've returned ${BADGE_RULES.onTimeReturns} or more books, all on time.`,
       );
     }
     if (book.status === 'lent') throw new LibraryError(`*${book.title}* is lent out right now. Try again later.`);
@@ -291,8 +213,8 @@ export function createLibrary({ store, notifier, settings, clock = () => new Dat
         `${r.borrower_name} hasn't agreed to the Terms yet, so this can't go ahead. They've been asked to; try again once they have.`,
       );
     }
-    if (book.verified_only && !isVerified(borrower)) {
-      throw new LibraryError(`*${r.book_title}* is for verified neighbours only, and ${r.borrower_name} isn't verified.`);
+    if (book.never_overdue_only && !badgesFor(borrower).includes('neverOverdue')) {
+      throw new LibraryError(`*${r.book_title}* is for 📗 Never overdue readers only, and ${r.borrower_name} isn't one yet.`);
     }
     if (!understood) throw new LibraryError('Please confirm that you’re lending at your own risk.');
     // The loan period starts at the hand-over (handOver); until then this allows a few days for pickup.
@@ -736,9 +658,6 @@ export function createLibrary({ store, notifier, settings, clock = () => new Dat
     handOver,
     borrowerRecord,
     badgesFor,
-    isVerified,
-    setVerified,
-    vouch,
     profileOf,
     canDeleteAccount,
     setAvailability,

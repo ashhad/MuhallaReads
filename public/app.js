@@ -446,8 +446,8 @@ function ownersHtml(g) {
       const status = c.status === 'lent' ? '<span class="tag lent">lent out</span>' : '<span class="tag ok">available</span>';
       let action = '';
       if (!mine && open) action = `<span class="tag">${open.status === 'pending' ? 'requested' : 'borrowing'}</span>`;
-      else if (!mine && c.status !== 'lent' && c.verifiedOnly && !state.me.verified) {
-        action = '<span class="tag" title="The owner lends this only to verified neighbours">✍️ verified only</span>';
+      else if (!mine && c.status !== 'lent' && c.neverOverdueOnly && !state.me.badges?.includes('neverOverdue')) {
+        action = '<span class="tag" title="The owner lends this only to readers who have returned 3 or more books, all on time">📗 Never overdue only</span>';
       } else if (!mine && c.status !== 'lent') {
         action = `<button class="btn small want" data-book="${c.bookId}" data-title="${esc(g.title)}" data-owner="${esc(c.owner.name)}">Request</button>`;
       }
@@ -507,7 +507,6 @@ async function openMember(id) {
   }
   const all = state.config.badges || {};
   const since = new Date(p.since).toLocaleDateString('en-IN', { month: 'long', year: 'numeric' });
-  const vouchLabel = state.me.admin ? '✍️ Verify as a neighbour' : `✍️ I know they live in ${p.place}`;
   const d = $('#member-card');
   d.innerHTML = `<div class="member-card">
       <h3 id="member-card-name">${esc(p.name)}</h3>
@@ -526,27 +525,11 @@ async function openMember(id) {
         <dt>Books lent</dt><dd>${p.lent}</dd>
         <dt>Borrowed and returned</dt><dd>${p.returned}</dd>
       </dl>
-      ${p.vouched ? '<p class="muted small">You’ve vouched for them. One more verified neighbour from their building makes them a Signed copy.</p>' : ''}
       <div class="row end">
         <button type="button" class="btn" data-close>Close</button>
-        ${p.canVouch ? `<button type="button" class="btn primary" data-vouch>${esc(vouchLabel)}</button>` : ''}
-        ${p.canUnverify ? '<button type="button" class="btn danger" data-unverify>Remove Signed copy</button>' : ''}
       </div>
     </div>`;
   d.querySelector('[data-close]').addEventListener('click', () => d.close());
-  d.querySelector('[data-vouch]')?.addEventListener('click', async () => {
-    try {
-      const r = await api(`/api/members/${id}/vouch`, { method: 'POST' });
-      toast(r.verified ? `✍️ ${p.name} is now a Signed copy.` : 'Thanks! One more verified neighbour from their building, and they’re a Signed copy.');
-      d.close();
-    } catch (ex) {
-      toast(ex.message);
-    }
-  });
-  d.querySelector('[data-unverify]')?.addEventListener('click', async () => {
-    await api(`/api/members/${id}/verify`, { method: 'POST', body: { verified: false } }).catch((ex) => toast(ex.message));
-    d.close();
-  });
   if (!d.open) d.showModal();
 }
 
@@ -1094,7 +1077,7 @@ async function loadMe() {
                 ${b.status === 'lent' ? '🤝 Lent out: mark returned' : '✅ Available: mark lent'}</button>
               <button class="icon-btn" data-del="${b.id}" aria-label="Remove">🗑️</button>
             </div>
-            <label class="check small"><input type="checkbox" data-vonly="${b.id}" ${b.verified_only ? 'checked' : ''}> Lend only to ✍️ verified neighbours</label>
+            <label class="check small"><input type="checkbox" data-only="${b.id}" ${b.never_overdue_only ? 'checked' : ''}> Lend only to 📗 Never overdue readers</label>
             </div></li>`,
         )
         .join('')
@@ -1113,9 +1096,9 @@ async function loadMe() {
       loadMe();
     }),
   );
-  $$('#mine [data-vonly]').forEach((box) =>
+  $$('#mine [data-only]').forEach((box) =>
     box.addEventListener('change', async () => {
-      await api(`/api/books/${box.dataset.vonly}`, { method: 'PATCH', body: { verifiedOnly: box.checked } }).catch((ex) => toast(ex.message));
+      await api(`/api/books/${box.dataset.only}`, { method: 'PATCH', body: { neverOverdueOnly: box.checked } }).catch((ex) => toast(ex.message));
     }),
   );
   $$('#mine [data-del]').forEach((btn) =>

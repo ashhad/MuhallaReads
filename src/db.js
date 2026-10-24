@@ -28,20 +28,7 @@ CREATE TABLE IF NOT EXISTS members (
   nudged_at       TEXT,                            -- last paid template, for "one per absence"
   terms_at        TEXT,                            -- when they agreed to the Terms (terms.html)
   terms_version   TEXT,                            -- which version (src/terms.js)
-  terms_via       TEXT,                            -- where: 'whatsapp' or 'app'
-  -- "Signed copy" (verified neighbour): the place they were verified at; moving clears it.
-  verified_place  TEXT,
-  verified_at     TEXT,
-  verified_by     INTEGER                          -- the admin who verified them; NULL = two neighbours vouched
-);
-
--- Verified neighbours vouching that someone lives in their building (two make a "Signed copy").
-CREATE TABLE IF NOT EXISTS vouches (
-  member_id  INTEGER NOT NULL REFERENCES members(id) ON DELETE CASCADE,
-  voucher_id INTEGER NOT NULL REFERENCES members(id) ON DELETE CASCADE,
-  building   TEXT NOT NULL,                        -- normalised, as vouched for
-  created_at TEXT NOT NULL,
-  PRIMARY KEY (member_id, voucher_id)
+  terms_via       TEXT                             -- where: 'whatsapp' or 'app'
 );
 
 CREATE TABLE IF NOT EXISTS sessions (
@@ -67,7 +54,7 @@ CREATE TABLE IF NOT EXISTS books (
   status     TEXT NOT NULL DEFAULT 'available' CHECK (status IN ('available', 'lent')),
   batch_id   TEXT,
   created_at TEXT NOT NULL,
-  verified_only INTEGER NOT NULL DEFAULT 0          -- the owner lends it only to verified neighbours
+  never_overdue_only INTEGER NOT NULL DEFAULT 0     -- the owner lends it only to "Never overdue" readers
 );
 CREATE INDEX IF NOT EXISTS books_owner ON books(owner_id);
 
@@ -187,9 +174,6 @@ function migrate(db) {
     terms_at: 'TEXT',
     terms_version: 'TEXT',
     terms_via: 'TEXT',
-    verified_place: 'TEXT',
-    verified_at: 'TEXT',
-    verified_by: 'INTEGER',
   };
   const cols = new Set(db.prepare('PRAGMA table_info(members)').all().map((c) => c.name));
   for (const [col, type] of Object.entries(added)) {
@@ -211,7 +195,17 @@ function migrate(db) {
     db.exec("UPDATE requests SET handed_over_at = decided_at WHERE status IN ('accepted', 'returned')");
   }
   const bookCols = new Set(db.prepare('PRAGMA table_info(books)').all().map((c) => c.name));
-  if (!bookCols.has('verified_only')) db.exec('ALTER TABLE books ADD COLUMN verified_only INTEGER NOT NULL DEFAULT 0');
+  if (bookCols.has('verified_only')) {
+    // The short-lived "verified neighbours only" option became "Never overdue readers only".
+    db.exec('ALTER TABLE books RENAME COLUMN verified_only TO never_overdue_only');
+  } else if (!bookCols.has('never_overdue_only')) {
+    db.exec('ALTER TABLE books ADD COLUMN never_overdue_only INTEGER NOT NULL DEFAULT 0');
+  }
+  // Neighbour verification ("Signed copy") was removed; don't keep who vouched for whom.
+  db.exec('DROP TABLE IF EXISTS vouches');
+  for (const col of ['verified_place', 'verified_at', 'verified_by']) {
+    if (cols.has(col)) db.exec(`ALTER TABLE members DROP COLUMN ${col}`);
+  }
   const sessionCols = new Set(db.prepare('PRAGMA table_info(sessions)').all().map((c) => c.name));
   if (!sessionCols.has('last_used_at')) db.exec('ALTER TABLE sessions ADD COLUMN last_used_at TEXT');
   const usageCols = new Set(db.prepare('PRAGMA table_info(usage)').all().map((c) => c.name));
@@ -489,8 +483,8 @@ export class Store {
     this.q('UPDATE books SET status = ? WHERE id = ?').run(status, bookId);
   }
 
-  setVerifiedOnly(ownerId, bookId, on) {
-    return this.q('UPDATE books SET verified_only = ? WHERE id = ? AND owner_id = ? RETURNING *').get(on ? 1 : 0, bookId, ownerId);
+  setNeverOverdueOnly(ownerId, bookId, on) {
+    return this.q('UPDATE books SET never_overdue_only = ? WHERE id = ? AND owner_id = ? RETURNING *').get(on ? 1 : 0, bookId, ownerId);
   }
 
   setStatus(ownerId, bookId, status) {
@@ -543,7 +537,7 @@ export class Store {
       g.copies.push({
         bookId: r.id,
         status: r.status,
-        verifiedOnly: Boolean(r.verified_only),
+        neverOverdueOnly: Boolean(r.never_overdue_only),
         owner: { id: r.owner_id, name: r.owner_name, place: placeOf({ building: r.owner_building, locality: r.owner_locality }) },
       });
     }
@@ -611,21 +605,6 @@ export class Store {
     ).get(memberId, memberId, memberId, memberId, at, memberId, memberId, memberId);
     const books = this.q('SELECT COUNT(*) AS n FROM books WHERE owner_id = ?').get(memberId).n;
     return { returned: r.returned, onTime: r.onTime, borrowing: r.borrowing, overdue: r.overdue, lent: r.lent, books };
-  }
-
-  // ---------- verified neighbours ----------
-
-  setVerified(id, { place = null, by = null, at = now() } = {}) {
-    this.q('UPDATE members SET verified_place = ?, verified_at = ?, verified_by = ? WHERE id = ?').run(place, place ? at : null, by, id);
-    if (!place) this.q('DELETE FROM vouches WHERE member_id = ?').run(id);
-  }
-
-  addVouch(memberId, voucherId, building) {
-    this.q('INSERT OR IGNORE INTO vouches (member_id, voucher_id, building, created_at) VALUES (?, ?, ?, ?)').run(memberId, voucherId, building, now());
-  }
-
-  vouchesFor(memberId, building) {
-    return this.q('SELECT voucher_id FROM vouches WHERE member_id = ? AND building = ?').all(memberId, building).map((v) => v.voucher_id);
   }
 
   updateRequest(id, fields) {

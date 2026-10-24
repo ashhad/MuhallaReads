@@ -71,7 +71,7 @@ test('borrowing over the API never leaks phone numbers until shared', async () =
     id: store.memberByPhone(AYESHA).id,
     name: 'Ayesha',
     place: 'Green Park Tower, Saket',
-    badges: ['signed', 'fresh'], // an admin counts as a verified neighbour
+    badges: ['fresh'],
   });
   assert.doesNotMatch(search.raw, /9198000/);
 

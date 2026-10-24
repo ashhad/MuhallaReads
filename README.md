@@ -36,13 +36,12 @@ Also in the app: **Tell me when someone adds it** (wishlist), block, and account
 ### Trust
 
 - **Badges** next to names, earned by being a good neighbour (only positive things are shown):
-  📰 *Fresh off the press* (joined in the last 30 days), ✍️ *Signed copy* (verified neighbour),
-  📗 *Never overdue* (3+ books returned, all on time), 📚 *Bestseller* (lent 5+ books) and
-  🏛️ *Classic* (all three, member for 3+ months). Tap a name to see a member's card: badges, member
-  since, who invited them, and how many books they've listed, lent and returned.
-- **Signed copy:** an admin verifies a neighbour (`verify 12` on WhatsApp, or on their card), or two
-  verified neighbours from the same building vouch for them. Moving to another building clears it.
-- **Lend only to verified neighbours:** a per-book option on the Me tab, for books you treasure.
+  📰 *Fresh off the press* (joined in the last 30 days), 📗 *Never overdue* (3+ books returned, all
+  on time), 📚 *Bestseller* (lent 5+ books) and 🏛️ *Classic* (Never overdue and a Bestseller, member
+  for 3+ months). Tap a name to see a member's card: badges, member since, who invited them, and how
+  many books they've listed, lent and returned.
+- **Lend only to Never overdue readers:** a per-book option on the Me tab, for books you treasure.
+- Who gets in is still decided by admins, who see each newcomer's name, building and inviter.
 - **Hand-over:** the loan period starts when either person taps *Got the book* / *Handed over* (or
   3 days after acceptance if nobody does). A loan can be called off until then, and doesn't count
   in anyone's record.

@@ -124,8 +124,6 @@ export function createApp({ store, deps = {}, settings = config } = {}) {
     termsAccepted: agreedToTerms(m),
     termsChanged: Boolean(m.terms_at) && !agreedToTerms(m), // agreed to an older version
     badges: library.badgesFor(m),
-    verified: library.isVerified(m),
-    admin: isAdmin(m),
     bookAlerts: Boolean(m.book_alerts),
     // Their personal invite code (the app builds the link), once they're in.
     invite: m.status === 'active' ? store.refCodeFor(m.id) : null,
@@ -309,12 +307,12 @@ export function createApp({ store, deps = {}, settings = config } = {}) {
     });
   });
 
-  // { status: 'available' | 'lent' } or { verifiedOnly: true | false } (lend only to verified neighbours)
+  // { status: 'available' | 'lent' } or { neverOverdueOnly: true | false } (lend only to "Never overdue" readers)
   api.patch('/books/:id', async (req, res) => {
-    const { status, verifiedOnly } = req.body || {};
+    const { status, neverOverdueOnly } = req.body || {};
     let book;
-    if (typeof verifiedOnly === 'boolean') {
-      book = store.setVerifiedOnly(req.member.id, Number(req.params.id), verifiedOnly);
+    if (typeof neverOverdueOnly === 'boolean') {
+      book = store.setNeverOverdueOnly(req.member.id, Number(req.params.id), neverOverdueOnly);
     } else {
       if (!['available', 'lent'].includes(status)) throw new HttpError(400, 'Unknown status.');
       book = await library.setAvailability(req.member, req.params.id, status);
@@ -400,21 +398,9 @@ export function createApp({ store, deps = {}, settings = config } = {}) {
     res.json({ message: { id: m.id, mine: true, body: m.body, at: m.created_at } });
   });
 
-  // ---------- members: profiles and verified neighbours ----------
+  // ---------- members: profiles ----------
 
   api.get('/members/:id', requireApproved, (req, res) => res.json({ profile: library.profileOf(req.member, req.params.id) }));
-
-  // A verified neighbour (or an admin) vouches that someone lives in their building.
-  api.post('/members/:id/vouch', requireApproved, async (req, res) => {
-    const result = await library.vouch(req.member, req.params.id);
-    res.json({ ...result, profile: library.profileOf(req.member, req.params.id) });
-  });
-
-  // Admins: { verified: true | false }
-  api.post('/members/:id/verify', requireAdmin, async (req, res) => {
-    await library.setVerified(req.member, req.params.id, req.body?.verified === true);
-    res.json({ profile: library.profileOf(req.member, req.params.id) });
-  });
 
   // ---------- wishlist ----------
 
