@@ -110,6 +110,7 @@ function sheet({ title, text = '', input = null, ok = 'OK' }) {
 function askTerms() {
   const d = $('#terms');
   if (d.open) return Promise.resolve(false);
+  $('#terms-title').textContent = state.me?.termsChanged ? 'Our Terms have changed' : 'One thing first';
   return new Promise((resolve) => {
     d.onclose = async () => {
       if (d.returnValue !== 'agree') return resolve(false);
@@ -614,9 +615,8 @@ async function showRequestList() {
           title: `Lend “${r.book.title}” to ${r.other.name}?`,
           text:
             (r.record ? `📋 ${r.record}\n\n` : '') +
-            'You’re lending at your own risk. MohallaReads only helps neighbours find each other: it doesn’t ' +
-            `hold books, check people or guarantee returns. If the book is late, lost or damaged, that’s between you and ${r.other.name}. ` +
-            `They’ll be asked to return it within ${state.config.loanDays || 21} days.`,
+            `You lend at your own risk: if it comes back late, lost or damaged, that’s between you and ${r.other.name}. ` +
+            `Due back in ${state.config.loanDays || 21} days.`,
           ok: 'I understand, lend it',
         });
         if (ok === null) return;

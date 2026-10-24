@@ -5,6 +5,7 @@ import assert from 'node:assert/strict';
 import { openDb } from '../src/db.js';
 import { createApp } from '../src/server.js';
 import { makeWorld, baseSettings, AYESHA, BILAL, CHAND } from './helpers.js';
+import { TERMS_VERSION } from '../src/terms.js';
 
 const RIYA = '919800000004';
 const DAY = 86400_000;
@@ -157,6 +158,56 @@ test('over the API: terms first, delete refused while borrowing', async () => {
     assert.equal(del.status, 400);
     assert.match(del.data.error, /You still have Dune from Ayesha/);
     assert.ok(s.memberById(borrower.id));
+  } finally {
+    srv.close();
+  }
+});
+
+test('agreeing to the Terms is recorded with the version and where; no loan starts without both agreeing', async () => {
+  const w = await world();
+  const ayesha = w.member(AYESHA);
+  assert.equal(ayesha.terms_version, TERMS_VERSION);
+  assert.equal(ayesha.terms_via, 'whatsapp'); // she agreed when joining on WhatsApp
+  assert.ok(ayesha.terms_at);
+
+  // Bilal asked for Dune before the Terms existed (or before they changed), and hasn't agreed since.
+  const { added } = await w.library.addBooks(ayesha, [{ title: 'Dune' }]);
+  const r = await w.library.want(w.member(BILAL), added[0].id);
+  w.store.q('UPDATE members SET terms_version = ? WHERE id = ?').run('2020-01-01', w.member(BILAL).id);
+  w.transport.clear();
+  await assert.rejects(w.library.decide(w.member(AYESHA), r.id, true, understood), /Bilal hasn't agreed to the Terms yet/);
+  assert.match(w.transport.to(BILAL)[0].text, /Ayesha would like to lend you \*Dune\*\. Please open the app and agree to the Terms first/);
+  assert.equal(w.store.requestById(r.id).status, 'pending');
+
+  // Nor can he ask for more books or add his own until he agrees.
+  const { added: more } = await w.library.addBooks(ayesha, [{ title: 'Sapiens' }]);
+  await assert.rejects(w.library.want(w.member(BILAL), more[0].id), /agree to the Terms/);
+  await assert.rejects(w.library.addBooks(w.member(BILAL), [{ title: 'Ikigai' }]), /agree to the Terms/);
+
+  w.store.acceptTerms(w.member(BILAL).id, { via: 'app' });
+  assert.equal((await w.library.decide(w.member(AYESHA), r.id, true, understood)).status, 'accepted');
+});
+
+test('when the Terms change, members are asked to agree again', async () => {
+  const s = openDb(':memory:');
+  const app = createApp({ store: s, settings: { ...baseSettings, whatsapp: {} }, deps: { transport: null } });
+  const srv = await new Promise((r) => { const x = app.listen(0, () => r(x)); });
+  const base = `http://127.0.0.1:${srv.address().port}`;
+  try {
+    const m = s.createMember({ name: 'Ayesha', phone: AYESHA });
+    s.setPlace(m.id, { building: 'Green Park Tower', locality: 'Saket' });
+    s.acceptTerms(m.id, { version: '2026-01-01' }); // an older version
+    const token = s.createSession(m.id);
+    const headers = { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` };
+    const me = await (await fetch(`${base}/api/me`, { headers })).json();
+    assert.equal(me.member.termsAccepted, false);
+    assert.equal(me.member.termsChanged, true);
+    const add = await fetch(`${base}/api/books`, { method: 'POST', headers, body: JSON.stringify({ books: [{ title: 'Dune' }] }) });
+    assert.equal(add.status, 403);
+    await fetch(`${base}/api/terms`, { method: 'POST', headers, body: JSON.stringify({ agree: true }) });
+    const now = s.memberById(m.id);
+    assert.equal(now.terms_version, TERMS_VERSION);
+    assert.equal(now.terms_via, 'app');
   } finally {
     srv.close();
   }

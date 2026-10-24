@@ -5,6 +5,7 @@
 import fs from 'node:fs';
 import { who, LibraryError, approvalTag, listLoans } from './library.js';
 import { placeOf } from './db.js';
+import { agreedToTerms, TERMS_SUMMARY } from './terms.js';
 
 const MAX_MESSAGE = 3900; // WhatsApp's limit is 4096 characters
 
@@ -79,9 +80,7 @@ export function createBot({ store, library, notifier, settings }) {
   const termsText = () =>
     [
       '📜 *Before you join*',
-      'Members lend and borrow books directly with each other, at their own risk. The volunteers who run ' +
-        `${settings.communityName} never hold any books, can't guarantee anything comes back, and aren't ` +
-        'responsible for books that are lost, damaged or not returned, or for anything that happens between members.',
+      TERMS_SUMMARY,
       ...(settings.publicUrl ? ['', `Terms: ${settings.publicUrl}/terms.html`] : []),
       '',
       'Tap *I agree* to continue.',
@@ -89,9 +88,9 @@ export function createBot({ store, library, notifier, settings }) {
 
   /** First-time setup: agreeing to the Terms, then building, then locality (at least one of those). */
   async function setup(member, text, reply, { payload } = {}) {
-    if (!member.terms_at) {
+    if (!agreedToTerms(member)) {
       if (AGREES.test(text)) {
-        store.acceptTerms(member.id);
+        store.acceptTerms(member.id, { via: 'whatsapp' });
         setupStep.set(member.id, 'building');
         return reply(`👍 Thanks!\n\n${ASK_BUILDING}`, { buttons: SKIP });
       }

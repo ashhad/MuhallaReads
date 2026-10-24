@@ -8,6 +8,7 @@ import * as lookup from './lookup.js';
 import { identifyBooks, parseDataUrl, VisionError } from './vision.js';
 import { createBot, cleanName, cleanPlace } from './bot.js';
 import { createLibrary, LibraryError, approvalTag } from './library.js';
+import { agreedToTerms } from './terms.js';
 import { createNotifier } from './notifier.js';
 import { createPhotoLimits, PhotoLimitError } from './photos.js';
 import { createMetaTransport, whatsappRouter } from './whatsapp.js';
@@ -118,7 +119,8 @@ export function createApp({ store, deps = {}, settings = config } = {}) {
     locality: m.locality,
     place: placeOf(m),
     status: m.status, // 'pending' until an admin approves them
-    termsAccepted: Boolean(m.terms_at),
+    termsAccepted: agreedToTerms(m),
+    termsChanged: Boolean(m.terms_at) && !agreedToTerms(m), // agreed to an older version
     bookAlerts: Boolean(m.book_alerts),
     // Their personal invite code (the app builds the link), once they're in.
     invite: m.status === 'active' ? store.refCodeFor(m.id) : null,
@@ -134,7 +136,7 @@ export function createApp({ store, deps = {}, settings = config } = {}) {
   // Members agree to the Terms (terms.html) when they join on WhatsApp; earlier members agree here.
   api.post('/terms', (req, res) => {
     if (req.body?.agree !== true) throw new HttpError(400, 'Tap “I agree” to accept the Terms.');
-    store.acceptTerms(req.member.id);
+    store.acceptTerms(req.member.id, { via: 'app' });
     res.json({ member: publicMe(store.memberById(req.member.id)) });
   });
 
@@ -175,7 +177,7 @@ export function createApp({ store, deps = {}, settings = config } = {}) {
   };
   // Lending, borrowing and adding books happen under the Terms, so members must have agreed to them.
   const requireTerms = (req, _res, next) => {
-    if (!req.member.terms_at) throw new HttpError(403, 'Please agree to the Terms first.', 'terms');
+    if (!agreedToTerms(req.member)) throw new HttpError(403, 'Please agree to the Terms first.', 'terms');
     next();
   };
   const requireAdmin = (req, _res, next) => {
@@ -353,7 +355,7 @@ export function createApp({ store, deps = {}, settings = config } = {}) {
   const actions = {
     // The app asks the owner to confirm they lend at their own risk, every time.
     accept: (m, id, body) => {
-      if (!m.terms_at) throw new HttpError(403, 'Please agree to the Terms first.', 'terms');
+      if (!agreedToTerms(m)) throw new HttpError(403, 'Please agree to the Terms first.', 'terms');
       return library.decide(m, id, true, { understood: body?.understood === true });
     },
     decline: (m, id) => library.decide(m, id, false),

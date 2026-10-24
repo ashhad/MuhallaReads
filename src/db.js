@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { DatabaseSync } from 'node:sqlite';
+import { TERMS_VERSION } from './terms.js';
 
 // Members' phone numbers are stored only so the WhatsApp bot can message them. They are never
 // returned by any query used to show data to other members.
@@ -25,7 +26,9 @@ CREATE TABLE IF NOT EXISTS members (
   books_seen_id   INTEGER,                         -- told about / saw books up to this book id
   book_alert_at   TEXT,                            -- last new-book message, to keep them rare
   nudged_at       TEXT,                            -- last paid template, for "one per absence"
-  terms_at        TEXT                             -- when they agreed to the Terms (terms.html)
+  terms_at        TEXT,                            -- when they agreed to the Terms (terms.html)
+  terms_version   TEXT,                            -- which version (src/terms.js)
+  terms_via       TEXT                             -- where: 'whatsapp' or 'app'
 );
 
 CREATE TABLE IF NOT EXISTS sessions (
@@ -167,6 +170,8 @@ function migrate(db) {
     book_alert_at: 'TEXT',
     nudged_at: 'TEXT',
     terms_at: 'TEXT',
+    terms_version: 'TEXT',
+    terms_via: 'TEXT',
   };
   const cols = new Set(db.prepare('PRAGMA table_info(members)').all().map((c) => c.name));
   for (const [col, type] of Object.entries(added)) {
@@ -349,8 +354,9 @@ export class Store {
     this.q('DELETE FROM members WHERE id = ?').run(id);
   }
 
-  acceptTerms(id, at = now()) {
-    this.q('UPDATE members SET terms_at = ? WHERE id = ?').run(at, id);
+  /** Records that a member agreed to the Terms: when, which version, and where. */
+  acceptTerms(id, { via = 'app', version = TERMS_VERSION, at = now() } = {}) {
+    this.q('UPDATE members SET terms_at = ?, terms_version = ?, terms_via = ? WHERE id = ?').run(at, version, via, id);
   }
 
   markNudged(id, at = now()) {

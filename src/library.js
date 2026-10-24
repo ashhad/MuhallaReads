@@ -3,6 +3,7 @@
 // Nobody's phone number is ever revealed unless they explicitly choose to share it with one person.
 import crypto from 'node:crypto';
 import { matchesQuery, placeOf, plainLine, queryWords } from './db.js';
+import { agreedToTerms } from './terms.js';
 
 export class LibraryError extends Error {}
 
@@ -86,6 +87,7 @@ export function createLibrary({ store, notifier, settings, clock = () => new Dat
     const book = store.bookById(Number(bookId));
     if (!book) throw new LibraryError("That book isn't in the catalogue any more.");
     if (book.owner_id === borrower.id) throw new LibraryError('That one is your own copy 🙂');
+    if (!agreedToTerms(borrower)) throw new LibraryError('Please agree to the Terms first.');
     if (store.isBlocked(borrower.id, book.owner_id)) throw new LibraryError("You can't request this book.");
     if (book.status === 'lent') throw new LibraryError(`*${book.title}* is lent out right now. Try again later.`);
     if (store.openRequestFor(borrower.id, book.id)) {
@@ -145,6 +147,21 @@ export function createLibrary({ store, notifier, settings, clock = () => new Dat
       throw new LibraryError(
         `${r.borrower_name} already has ${maxBorrowed()} borrowed books, the most anyone can have at once. ` +
           'You can accept once they’ve returned one.',
+      );
+    }
+    // A loan only starts between two members who have both agreed to the current Terms (a request sent
+    // before they existed, or before they changed, waits until the borrower agrees).
+    if (!agreedToTerms(owner)) throw new LibraryError('Please agree to the Terms first.');
+    const borrower = store.memberById(r.borrower_id);
+    if (!agreedToTerms(borrower)) {
+      await notifier.notify(borrower.id, {
+        requestId: r.id,
+        text: `📚 ${owner.name} would like to lend you *${r.book_title}*. Please open the app and agree to the Terms first.`,
+        link: requestLink(r.id),
+        optional: true,
+      });
+      throw new LibraryError(
+        `${r.borrower_name} hasn't agreed to the Terms yet, so this can't go ahead. They've been asked to; try again once they have.`,
       );
     }
     if (!understood) throw new LibraryError('Please confirm that you’re lending at your own risk.');
@@ -259,6 +276,7 @@ export function createLibrary({ store, notifier, settings, clock = () => new Dat
 
   /** Adds books, then tells anyone who was waiting for one of them (once per wish). */
   async function addBooks(member, books) {
+    if (!agreedToTerms(member)) throw new LibraryError('Please agree to the Terms first.');
     const result = store.addBooks(member.id, books);
     if (!result.added.length) return result;
 
