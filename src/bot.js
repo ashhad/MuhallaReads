@@ -35,7 +35,7 @@ export function helpText(communityName, { admin = false, photos = false } = {}) 
     '🗑️ `delete me`: delete your account and all your data',
     ...(admin ? ['', '🛠️ Admin: `pending` · `approve 12` · `decline 12` · `stats` · `members` · `remove member 12` · `security`'] : []),
     '',
-    '🔒 Your number is never shown to anyone.',
+    '🔒 Your number stays private unless you choose to share it.',
   ].join('\n');
 }
 
