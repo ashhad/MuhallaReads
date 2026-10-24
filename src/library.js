@@ -26,6 +26,13 @@ const DAY = 86400_000;
 const ESCALATE_AFTER_DAYS = 14;
 // An accepted loan's clock starts when the book changes hands; if nobody confirms that, after this many days.
 const PICKUP_DAYS = 3;
+const HOUR = 3600_000;
+// Library-style rules: one more week per renewal (the owner agrees; MAX_RENEWALS caps it), a book can be
+// marked lost this long after its due date, and a returned book is kept for the first person waiting.
+const RENEWAL_DAYS = 7;
+const LOST_AFTER_DAYS = 30;
+const KEEP_HOURS = 48;
+const MAX_QUEUES = 5;
 
 /** "*Dune* from Ayesha and *Ikigai* from Bilal" */
 export function listLoans(loans) {
@@ -50,6 +57,10 @@ export function createLibrary({ store, notifier, settings, clock = () => new Dat
   /** A button that opens the web app at `path` (e.g. "/?request=7"). Omitted if the site address isn't set. */
   const appLink = (path, label) => (settings.publicUrl ? { url: settings.publicUrl + path, label } : undefined);
   const requestLink = (id, label = 'Open request') => appLink(`/?request=${id}`, label);
+  const fmtWhen = (ms) =>
+    new Date(ms).toLocaleString('en-IN', { day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit', timeZone: settings.timeZone });
+  const maxRenewals = () => settings.maxRenewals ?? 2;
+  const waitingLine = (n) => (n ? ` ${n} ${n > 1 ? 'people are' : 'person is'} waiting for it.` : '');
 
   function getRequest(id, member) {
     const r = store.requestById(Number(id));
@@ -70,7 +81,7 @@ export function createLibrary({ store, notifier, settings, clock = () => new Dat
     const r = store.memberRecord(m.id, at.toISOString());
     const days = (at - new Date(m.created_at)) / DAY;
     const earned = {
-      neverOverdue: r.returned >= BADGE_RULES.onTimeReturns && r.onTime === r.returned && !r.overdue,
+      neverOverdue: r.returned >= BADGE_RULES.onTimeReturns && r.onTime === r.returned && !r.overdue && !r.lost,
       bestseller: r.lent >= BADGE_RULES.lends,
       fresh: days < BADGE_RULES.freshDays,
     };
@@ -92,6 +103,7 @@ export function createLibrary({ store, notifier, settings, clock = () => new Dat
     if (r.borrowing) {
       parts.push(`has ${r.borrowing} book${r.borrowing > 1 ? 's' : ''} now${r.overdue ? ` (${r.overdue} overdue)` : ''}`);
     }
+    if (r.lost) parts.push(`${r.lost} marked lost`);
     if (inviter) parts.push(`invited by ${inviter.name}`);
     const badges = badgesFor(m);
     if (badges.length) parts.push(badgeLine(badges));
@@ -138,7 +150,21 @@ export function createLibrary({ store, notifier, settings, clock = () => new Dat
           `people who've returned ${BADGE_RULES.onTimeReturns} or more books, all on time.`,
       );
     }
-    if (book.status === 'lent') throw new LibraryError(`*${book.title}* is lent out right now. Try again later.`);
+    const block = borrowingBlock(borrower);
+    if (block) throw new LibraryError(block);
+    if (book.status === 'lent' || book.lost_at) {
+      throw new LibraryError(`*${book.title}* is lent out right now. Join the queue to be told when it's back.`);
+    }
+    // A book that's back is kept for the first person in the queue for a while.
+    const [first] = store.holdsFor(book.id);
+    if (first && first.member_id !== borrower.id) {
+      const until = first.offered_at ? Date.parse(first.offered_at) + KEEP_HOURS * HOUR : null;
+      if (!until || clock().getTime() < until) {
+        throw new LibraryError(
+          `*${book.title}* is being kept for the next person in the queue${until ? ` until ${fmtWhen(until)}` : ''}. Join the queue to be next.`,
+        );
+      }
+    }
     if (store.openRequestFor(borrower.id, book.id)) {
       throw new LibraryError(`You've already asked for *${book.title}*. See the Requests tab.`);
     }
@@ -154,6 +180,7 @@ export function createLibrary({ store, notifier, settings, clock = () => new Dat
     }
     note = plainLine(note, 200); // one plain line, shown in quotes
     const id = store.createRequest({ bookId: book.id, borrowerId: borrower.id, ownerId: book.owner_id, note });
+    store.removeHold(book.id, borrower.id); // their turn in the queue is used
 
     await notifier.notify(book.owner_id, {
       requestId: id,
@@ -185,6 +212,7 @@ export function createLibrary({ store, notifier, settings, clock = () => new Dat
         link: requestLink(r.id),
         template: { name: 'request_update', params: [r.book_title, `${owner.name} can't lend it right now`], url: String(r.id) },
       });
+      await offerToQueue(r.book_id);
       return store.requestById(r.id);
     }
 
@@ -216,12 +244,18 @@ export function createLibrary({ store, notifier, settings, clock = () => new Dat
     if (book.never_overdue_only && !badgesFor(borrower).includes('neverOverdue')) {
       throw new LibraryError(`*${r.book_title}* is for 📗 Never overdue readers only, and ${r.borrower_name} isn't one yet.`);
     }
+    if (borrowingBlock(borrower)) {
+      throw new LibraryError(`${r.borrower_name} has a book that's overdue or not settled, so this can't go ahead until that's sorted.`);
+    }
     if (!understood) throw new LibraryError('Please confirm that you’re lending at your own risk.');
     // The loan period starts at the hand-over (handOver); until then this allows a few days for pickup.
     const due = new Date(clock().getTime() + (settings.loanDays + PICKUP_DAYS) * DAY).toISOString();
     const at = clock().toISOString();
     store.updateRequest(r.id, { status: 'accepted', decided_at: at, due_at: due, owner_risk_at: at });
     store.setBookStatus(r.book_id, 'lent');
+    // Lent to someone else while it was kept for the first in the queue: they keep their place for next time.
+    const [first] = store.holdsFor(r.book_id);
+    if (first?.offered_at && first.member_id !== r.borrower_id) store.updateHold(first.id, { offered_at: null });
 
     await notifier.notify(r.borrower_id, {
       requestId: r.id,
@@ -250,11 +284,14 @@ export function createLibrary({ store, notifier, settings, clock = () => new Dat
         text: `${member.name} called off the loan of *${r.book_title}* before it changed hands.`,
         optional: true,
       });
+      await offerToQueue(r.book_id);
       return store.requestById(r.id);
     }
     if (r.borrower_id !== member.id) throw new LibraryError('Only the person who asked can cancel a request.');
     if (r.status !== 'pending') throw new LibraryError(`Request #${r.id} is already ${r.status}.`);
-    return store.updateRequest(r.id, { status: 'cancelled', closed_at: clock().toISOString() });
+    store.updateRequest(r.id, { status: 'cancelled', closed_at: clock().toISOString() });
+    await offerToQueue(r.book_id);
+    return store.requestById(r.id);
   }
 
   /** Either of them confirms the book has changed hands: the loan period starts now. */
@@ -282,16 +319,210 @@ export function createLibrary({ store, notifier, settings, clock = () => new Dat
     if (r.owner_id !== owner.id) {
       throw new LibraryError(`Only ${r.owner_name} can mark it returned. Hand it back and let them know!`);
     }
-    if (r.status !== 'accepted') throw new LibraryError(`Request #${r.id} isn't an active loan.`);
-    if (!r.handed_over_at) return cancel(owner, r.id); // it never left: calling it off, not a return
-    store.updateRequest(r.id, { status: 'returned', closed_at: clock().toISOString() });
+    if (!['accepted', 'lost'].includes(r.status)) throw new LibraryError(`Request #${r.id} isn't an active loan.`);
+    if (r.status === 'accepted' && !r.handed_over_at) return cancel(owner, r.id); // it never left: calling it off
+    // A book marked lost that turns up after all counts as a (late) return.
+    store.updateRequest(r.id, { status: 'returned', closed_at: clock().toISOString(), renewal_asked_at: null });
     store.setBookStatus(r.book_id, 'available');
+    store.setBookLost(r.book_id, null);
     await notifier.notify(r.borrower_id, {
       requestId: r.id,
       text: `📗 ${owner.name} got *${r.book_title}* back. Thanks for returning it!`,
       optional: true, // a nice-to-have; never worth a paid message
     });
+    await offerToQueue(r.book_id);
     return store.requestById(r.id);
+  }
+
+  // ---------- library-style rules: no borrowing while overdue, renewals, the queue, lost books ----------
+
+  /** Why this member can't borrow right now (a book overdue, or one marked lost and not settled), or null. */
+  function borrowingBlock(member) {
+    const now = clock().toISOString();
+    const late = store.borrowedBy(member.id).find((r) => r.due_at && r.due_at < now);
+    if (late) return `Please return *${late.book_title}* to ${late.owner_name} first: it was due on ${fmtDate(late.due_at)}.`;
+    const [lost] = store.unsettledLostBy(member.id);
+    if (lost) {
+      return `Please settle *${lost.book_title}* with ${lost.owner_name} first (it was marked lost): replace it, or agree a price with them.`;
+    }
+    return null;
+  }
+
+  /** When a loan may get one more week: after the hand-over, under the cap, and nobody waiting. */
+  const renewedDue = (r) => new Date(Math.max(Date.parse(r.due_at), clock().getTime()) + RENEWAL_DAYS * DAY).toISOString();
+
+  async function askRenewal(borrower, requestId) {
+    const r = getRequest(requestId, borrower);
+    if (r.borrower_id !== borrower.id) throw new LibraryError('Only the borrower can ask for more time.');
+    if (r.status !== 'accepted' || !r.handed_over_at) throw new LibraryError('You can ask for more time once you have the book.');
+    if (r.renewal_asked_at) throw new LibraryError(`You've already asked ${r.owner_name}. They'll answer in the app.`);
+    if (r.renewals >= maxRenewals()) {
+      throw new LibraryError(
+        `*${r.book_title}* has already had ${maxRenewals()} extra week${maxRenewals() > 1 ? 's' : ''}, the most allowed. Please return it by ${fmtDate(r.due_at)}.`,
+      );
+    }
+    const waiting = store.holdsFor(r.book_id).length;
+    if (waiting) throw new LibraryError(`${waiting} ${waiting > 1 ? 'people are' : 'person is'} waiting for *${r.book_title}*, so it can't be extended.`);
+    store.updateRequest(r.id, { renewal_asked_at: clock().toISOString() });
+    await notifier.notify(r.owner_id, {
+      requestId: r.id,
+      text: `📅 ${r.borrower_name} asks to keep *${r.book_title}* one more week, until ${fmtDate(renewedDue(r))}. Answer in the app.`,
+      link: requestLink(r.id),
+      template: { name: 'request_update', params: [r.book_title, `${r.borrower_name} asks to keep it one more week`], url: String(r.id) },
+    });
+    return store.requestById(r.id);
+  }
+
+  async function answerRenewal(owner, requestId, yes) {
+    const r = getRequest(requestId, owner);
+    if (r.owner_id !== owner.id) throw new LibraryError(`Only ${r.owner_name} can answer this.`);
+    if (r.status !== 'accepted' || !r.renewal_asked_at) throw new LibraryError('There’s no request for more time to answer.');
+    if (yes) {
+      const due = renewedDue(r);
+      store.updateRequest(r.id, { due_at: due, renewals: r.renewals + 1, renewal_asked_at: null, reminders: 0, owner_late_at: null, escalated_at: null });
+      await notifier.notify(r.borrower_id, { requestId: r.id, text: `📅 ${owner.name} said yes: keep *${r.book_title}* until ${fmtDate(due)}.`, link: requestLink(r.id) });
+    } else {
+      store.updateRequest(r.id, { renewal_asked_at: null });
+      await notifier.notify(r.borrower_id, { requestId: r.id, text: `${owner.name} needs *${r.book_title}* back by ${fmtDate(r.due_at)}.`, link: requestLink(r.id) });
+    }
+    return store.requestById(r.id);
+  }
+
+  /** Joins the queue for a book that's lent out (or kept for someone else). */
+  async function joinQueue(member, bookId) {
+    const book = store.bookById(Number(bookId));
+    if (!book || book.lost_at) throw new LibraryError("That book isn't in the catalogue any more.");
+    if (book.owner_id === member.id) throw new LibraryError('That one is your own copy 🙂');
+    if (!agreedToTerms(member)) throw new LibraryError('Please agree to the Terms first.');
+    if (store.isBlocked(member.id, book.owner_id) || store.isBlocked(book.owner_id, member.id)) throw new LibraryError("You can't request this book.");
+    if (book.never_overdue_only && !badgesFor(member).includes('neverOverdue')) {
+      throw new LibraryError(`*${book.title}* is lent only to 📗 Never overdue readers.`);
+    }
+    const block = borrowingBlock(member);
+    if (block) throw new LibraryError(block);
+    if (store.openRequestFor(member.id, book.id)) throw new LibraryError(`You've already asked for *${book.title}*.`);
+    const holds = store.holdsFor(book.id);
+    if (!holds.some((h) => h.member_id === member.id)) {
+      if (book.status === 'available' && !holds.length) throw new LibraryError(`*${book.title}* is available now: just tap Request.`);
+      if (store.countHolds(member.id) >= MAX_QUEUES) {
+        throw new LibraryError(`You're already waiting for ${MAX_QUEUES} books. Leave a queue before joining another.`);
+      }
+      store.addHold(book.id, member.id);
+    }
+    return queueView(book.id, member);
+  }
+
+  async function leaveQueue(member, bookId) {
+    store.removeHold(Number(bookId), member.id);
+    await offerToQueue(Number(bookId)); // if it was being kept for them, the next person's turn
+    return queueView(Number(bookId), member);
+  }
+
+  /** How many are waiting for a book, and this member's place (1 = next). */
+  function queueView(bookId, member) {
+    const holds = store.holdsFor(bookId);
+    const place = holds.findIndex((h) => h.member_id === member.id) + 1;
+    return { waiting: holds.length, place: place || null, keptForMe: place === 1 && Boolean(holds[0].offered_at) };
+  }
+
+  /** A book that's available again goes to the first person waiting: told, and kept for them a while. */
+  async function offerToQueue(bookId) {
+    const book = store.bookById(bookId);
+    if (!book || book.status !== 'available' || book.lost_at) return false;
+    const [first] = store.holdsFor(bookId);
+    if (!first || first.offered_at) return false;
+    const at = clock();
+    store.updateHold(first.id, { offered_at: at.toISOString() });
+    const owner = store.memberById(book.owner_id);
+    await notifier.notify(first.member_id, {
+      text:
+        `📗 *${book.title}* is back with ${who(owner)}, and you're first in the queue. It's kept for you until ` +
+        `${fmtWhen(at.getTime() + KEEP_HOURS * HOUR)}: open the app and tap *Request*.`,
+      link: appLink(`/?q=${encodeURIComponent(book.title)}`, 'Ask for it'),
+      template: { name: 'wishlist_alert', params: [book.title, who(owner)], url: encodeURIComponent(book.title) },
+    });
+    return true;
+  }
+
+  /** Moves queues along: a turn that wasn't taken in time passes to the next person. Run periodically. */
+  async function runQueues(at = clock()) {
+    for (const bookId of store.booksWithHolds()) {
+      const [first] = store.holdsFor(bookId);
+      if (first?.offered_at && at.getTime() - Date.parse(first.offered_at) >= KEEP_HOURS * HOUR) {
+        store.removeHold(bookId, first.member_id);
+        await notifier.notify(first.member_id, {
+          text: `Your turn for *${store.bookById(bookId)?.title}* has passed, so it's gone to the next person waiting. You can join the queue again.`,
+          optional: true,
+        });
+      }
+      await offerToQueue(bookId);
+    }
+  }
+
+  /** Thirty days after the due date, the owner may mark a book lost: the loan closes, the borrower settles up. */
+  async function markLost(owner, requestId) {
+    const r = getRequest(requestId, owner);
+    if (r.owner_id !== owner.id) throw new LibraryError(`Only ${r.owner_name} can do this.`);
+    if (r.status !== 'accepted') throw new LibraryError(`Request #${r.id} isn't an active loan.`);
+    const from = Date.parse(r.due_at) + LOST_AFTER_DAYS * DAY;
+    if (clock().getTime() < from) throw new LibraryError(`You can mark it lost from ${fmtDate(from)}, ${LOST_AFTER_DAYS} days after it was due.`);
+    const at = clock().toISOString();
+    store.updateRequest(r.id, { status: 'lost', closed_at: at, renewal_asked_at: null });
+    store.setBookLost(r.book_id, at);
+    for (const memberId of store.clearHolds(r.book_id)) {
+      await notifier.notify(memberId, { text: `*${r.book_title}* isn't coming back, so its queue has closed.`, optional: true });
+    }
+    await notifier.notify(r.borrower_id, {
+      requestId: r.id,
+      text:
+        `📕 ${owner.name} has marked *${r.book_title}* as lost, more than ${LOST_AFTER_DAYS} days after it was due. ` +
+        `Please replace it, or agree a price with ${owner.name}; you can message them in the app. Until it's settled you can't borrow other books.`,
+      link: requestLink(r.id),
+      template: { name: 'request_update', params: [r.book_title, `${owner.name} marked it as lost`], url: String(r.id) },
+    });
+    const borrower = store.memberById(r.borrower_id);
+    for (const admin of admins()) {
+      if (admin.id === owner.id || admin.id === r.borrower_id) continue;
+      await notifier.notify(admin.id, { text: `📕 *${r.book_title}*, lent by ${who(owner)}, was marked lost. It was with ${who(borrower)}.` });
+    }
+    return store.requestById(r.id);
+  }
+
+  /** The owner says a lost book was replaced or paid for. */
+  async function markSettled(owner, requestId) {
+    const r = getRequest(requestId, owner);
+    if (r.owner_id !== owner.id) throw new LibraryError(`Only ${r.owner_name} can do this.`);
+    if (r.status !== 'lost' || r.settled_at) throw new LibraryError('There’s nothing to settle here.');
+    store.updateRequest(r.id, { settled_at: clock().toISOString() });
+    await notifier.notify(r.borrower_id, { requestId: r.id, text: `🤝 ${owner.name} marked *${r.book_title}* as settled. Thank you!`, optional: true });
+    return store.requestById(r.id);
+  }
+
+  /** A book marked lost is back on the owner's shelf (the same copy turned up, or it was replaced). */
+  async function relist(owner, bookId) {
+    const book = store.bookById(Number(bookId));
+    if (!book || book.owner_id !== owner.id) return null;
+    const lostLoan = store.requestsFor(owner.id).find((r) => r.book_id === book.id && r.status === 'lost' && !r.settled_at);
+    if (lostLoan) await markSettled(owner, lostLoan.id);
+    store.setBookLost(book.id, null);
+    return store.setStatus(owner.id, book.id, 'available');
+  }
+
+  /** The parts of a loan the app shows besides the basics: renewals, the queue, losing it. */
+  function loanView(r, viewer) {
+    const iOwn = r.owner_id === viewer.id;
+    const waiting = store.holdsFor(r.book_id).length;
+    const lostFrom = r.due_at ? Date.parse(r.due_at) + LOST_AFTER_DAYS * DAY : null;
+    const active = r.status === 'accepted' && Boolean(r.handed_over_at);
+    return {
+      waiting,
+      renewals: r.renewals,
+      maxRenewals: maxRenewals(),
+      renewalAsked: Boolean(r.renewal_asked_at),
+      canRenew: !iOwn && active && !r.renewal_asked_at && r.renewals < maxRenewals() && !waiting,
+      canMarkLost: iOwn && r.status === 'accepted' && lostFrom !== null && clock().getTime() >= lostFrom,
+      settled: Boolean(r.settled_at),
+    };
   }
 
   /** Manual "lent"/"available" toggle. Making a book available again closes its active loan, if any. */
@@ -304,7 +535,7 @@ export function createLibrary({ store, notifier, settings, clock = () => new Dat
 
   async function sendMessage(member, requestId, body) {
     const r = getRequest(requestId, member);
-    if (r.status !== 'accepted') {
+    if (r.status !== 'accepted' && !(r.status === 'lost' && !r.settled_at)) {
       throw new LibraryError(
         r.status === 'pending'
           ? 'You can message each other once the request is accepted.'
@@ -580,9 +811,11 @@ export function createLibrary({ store, notifier, settings, clock = () => new Dat
         store.updateRequest(r.id, { reminders: r.reminders + 1 });
         await notifier.notify(r.borrower_id, {
           requestId: r.id,
-          text: overdue
-            ? `⏰ *${r.book_title}* from ${r.owner_name} was due back on ${fmtDate(r.due_at)}. Please return it soon, or message them in the app.`
-            : `⏰ Reminder: *${r.book_title}* from ${r.owner_name} is due back on ${fmtDate(r.due_at)}.`,
+          text:
+            (overdue
+              ? `⏰ *${r.book_title}* from ${r.owner_name} was due back on ${fmtDate(r.due_at)}. Please return it soon, or message them in the app.`
+              : `⏰ Reminder: *${r.book_title}* from ${r.owner_name} is due back on ${fmtDate(r.due_at)}.`) +
+            waitingLine(store.holdsFor(r.book_id).length),
           link: requestLink(r.id),
           template: { name: 'return_reminder', params: [r.book_title, r.owner_name, fmtDate(r.due_at)], url: String(r.id) },
         });
@@ -643,6 +876,10 @@ export function createLibrary({ store, notifier, settings, clock = () => new Dat
           'Once the owner taps *Got it back*, you can delete your account.',
       );
     }
+    const [lost] = store.unsettledLostBy(member.id);
+    if (lost) {
+      throw new LibraryError(`You haven't settled *${lost.book_title}* with ${lost.owner_name} yet (it was marked lost). Please do that first.`);
+    }
   }
 
   function deleteAccount(member) {
@@ -656,6 +893,16 @@ export function createLibrary({ store, notifier, settings, clock = () => new Dat
     cancel,
     markReturned,
     handOver,
+    askRenewal,
+    answerRenewal,
+    joinQueue,
+    leaveQueue,
+    queueView,
+    runQueues,
+    markLost,
+    markSettled,
+    relist,
+    loanView,
     borrowerRecord,
     badgesFor,
     profileOf,

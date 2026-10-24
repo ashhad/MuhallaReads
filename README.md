@@ -30,6 +30,12 @@ happens. **WhatsApp** is used only to join, manage your account, and get notific
    **Got it back**. A late book means weekly reminders to the borrower, a note to the owner, and
    after two weeks a note to the admins and to whoever invited the borrower. Nobody can delete their
    account while holding someone's book.
+7. **Library rules:** the borrower can ask for **one more week** (the owner agrees; at most
+   `MAX_RENEWALS`, default 2, and not when someone's waiting). A lent-out book has a **queue**: when
+   it's back, the first in line is told and it's kept for them for 2 days, then the next. While a
+   book is **overdue**, its borrower can't borrow or queue for others. **30 days after the due
+   date** the owner can mark it **lost**: it leaves the catalogue, and the borrower replaces it or
+   agrees a price before borrowing again (the owner taps *Settled*, or *Got it back* if it turns up).
 
 Also in the app: **Tell me when someone adds it** (wishlist), block, and account deletion.
 
@@ -139,6 +145,7 @@ See `.env.example` for all of them. The main ones:
 | `ADMIN_PHONES` | Numbers allowed to use `stats`, `members`, `remove member <id>` |
 | `LOAN_DAYS` | Loan length before reminders (default 21) |
 | `MAX_BORROWED` | Most books one member can have borrowed at the same time (default 2) |
+| `MAX_RENEWALS` | How many times a loan can get one more week, with the owner's OK (default 2) |
 | `MONTHLY_TEMPLATE_LIMIT` | Cap on paid WhatsApp messages per month (default 200) |
 | `WHATSAPP_TEMPLATES` | `off` until Meta approves the templates |
 | `ANTHROPIC_API_KEY` | Turns on shelf-photo recognition |

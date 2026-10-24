@@ -74,6 +74,7 @@ export function createApp({ store, deps = {}, settings = config } = {}) {
       stats: store.stats(),
       loanDays: settings.loanDays,
       maxBorrowed: settings.maxBorrowed ?? 2,
+      maxRenewals: settings.maxRenewals ?? 2,
       badges: BADGES,
     });
   });
@@ -226,7 +227,12 @@ export function createApp({ store, deps = {}, settings = config } = {}) {
       if (!q.trim()) store.markBooksSeen(req.member.id); // they've seen what's new; no "while you were away" for these
       const badges = new Map(); // each owner's badges, worked out once per search
       const badgesOf = (id) => badges.get(id) ?? badges.set(id, library.badgesFor(id)).get(id);
-      for (const g of results) for (const c of g.copies) c.owner.badges = badgesOf(c.owner.id);
+      for (const g of results) {
+        for (const c of g.copies) {
+          c.owner.badges = badgesOf(c.owner.id);
+          c.queue = library.queueView(c.bookId, req.member); // who's waiting, and my place
+        }
+      }
     }
     res.json({ results });
   });
@@ -307,11 +313,14 @@ export function createApp({ store, deps = {}, settings = config } = {}) {
     });
   });
 
-  // { status: 'available' | 'lent' } or { neverOverdueOnly: true | false } (lend only to "Never overdue" readers)
+  // { status: 'available' | 'lent' }, { neverOverdueOnly: true | false } (lend only to "Never overdue"
+  // readers), or { relist: true } (a book marked lost is back on the shelf)
   api.patch('/books/:id', async (req, res) => {
-    const { status, neverOverdueOnly } = req.body || {};
+    const { status, neverOverdueOnly, relist } = req.body || {};
     let book;
-    if (typeof neverOverdueOnly === 'boolean') {
+    if (relist === true) {
+      book = await library.relist(req.member, req.params.id);
+    } else if (typeof neverOverdueOnly === 'boolean') {
       book = store.setNeverOverdueOnly(req.member.id, Number(req.params.id), neverOverdueOnly);
     } else {
       if (!['available', 'lent'].includes(status)) throw new HttpError(400, 'Unknown status.');
@@ -319,6 +328,14 @@ export function createApp({ store, deps = {}, settings = config } = {}) {
     }
     if (!book) throw new HttpError(404, 'Book not found.');
     res.json({ book });
+  });
+
+  // The queue for a book that's lent out: join it, or leave it.
+  api.post('/books/:id/queue', requireApproved, requireTerms, async (req, res) => {
+    res.json({ queue: await library.joinQueue(req.member, req.params.id) });
+  });
+  api.delete('/books/:id/queue', async (req, res) => {
+    res.json({ queue: await library.leaveQueue(req.member, req.params.id) });
   });
 
   api.delete('/books/:id', (req, res) => {
@@ -347,6 +364,7 @@ export function createApp({ store, deps = {}, settings = config } = {}) {
       createdAt: r.created_at,
       dueAt: r.due_at,
       handedOver: Boolean(r.handed_over_at), // until then, the loan period hasn't started
+      ...library.loanView(r, me), // renewals, the queue, losing it
       // For deciding whether to lend: how the borrower has done so far.
       ...(iOwn && ['pending', 'accepted'].includes(r.status) && { record: library.borrowerRecord(r.borrower_id) }),
     };
@@ -375,6 +393,11 @@ export function createApp({ store, deps = {}, settings = config } = {}) {
     cancel: (m, id) => library.cancel(m, id),
     returned: (m, id) => library.markReturned(m, id),
     handover: (m, id) => library.handOver(m, id),
+    renew: (m, id) => library.askRenewal(m, id), // the borrower asks for one more week
+    'renew-yes': (m, id) => library.answerRenewal(m, id, true),
+    'renew-no': (m, id) => library.answerRenewal(m, id, false),
+    lost: (m, id) => library.markLost(m, id), // 30+ days after the due date
+    settled: (m, id) => library.markSettled(m, id),
     share: async (m, id) => (await library.shareNumber(m, id), store.requestById(Number(id))),
     block: (m, id) => (library.block(m, id), store.requestById(Number(id))),
   };
@@ -455,9 +478,10 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
       `   WhatsApp: ${whatsappEnabled() ? `on (templates ${config.templatesEnabled ? 'on' : 'off'}, budget ${config.monthlyTemplateLimit}/month)` : 'off'}`,
     );
   });
-  // Return reminders and the admins' weekly photo-cost summary: check hourly.
+  // Return reminders, waiting queues and the admins' weekly photo-cost summary: check hourly.
   const remind = () => {
     app.locals.library.runReminders().catch((err) => console.error('Reminders failed:', err));
+    app.locals.library.runQueues().catch((err) => console.error('Queues failed:', err));
     app.locals.photos.weeklySummary().catch((err) => console.error('Weekly summary failed:', err));
   };
   setInterval(remind, 3600_000).unref();

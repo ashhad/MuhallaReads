@@ -2,7 +2,7 @@
 // member who agreed to an older version is asked again.
 
 /** The date of the current public/terms.html. Change it when members must agree to new Terms. */
-export const TERMS_VERSION = '2026-10-24';
+export const TERMS_VERSION = '2026-10-24.2'; // the date, plus a revision for a second change that day
 
 /** Whether a member has agreed to the current Terms. */
 export const agreedToTerms = (m) => Boolean(m?.terms_at) && m.terms_version === TERMS_VERSION;

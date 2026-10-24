@@ -4,6 +4,31 @@ import crypto from 'node:crypto';
 import { DatabaseSync } from 'node:sqlite';
 import { TERMS_VERSION } from './terms.js';
 
+// Borrow requests and loans. Kept separate so an older database can be rebuilt with it (see migrate).
+const REQUESTS_TABLE = `CREATE TABLE IF NOT EXISTS requests (
+  id              INTEGER PRIMARY KEY,
+  book_id         INTEGER NOT NULL REFERENCES books(id) ON DELETE CASCADE,
+  borrower_id     INTEGER NOT NULL REFERENCES members(id) ON DELETE CASCADE,
+  owner_id        INTEGER NOT NULL REFERENCES members(id) ON DELETE CASCADE,
+  status          TEXT NOT NULL DEFAULT 'pending'
+                  CHECK (status IN ('pending', 'accepted', 'declined', 'cancelled', 'returned', 'lost')),
+  note            TEXT NOT NULL DEFAULT '',
+  created_at      TEXT NOT NULL,
+  decided_at      TEXT,
+  due_at          TEXT,
+  closed_at       TEXT,
+  reminders       INTEGER NOT NULL DEFAULT 0,
+  borrower_shared INTEGER NOT NULL DEFAULT 0,
+  owner_shared    INTEGER NOT NULL DEFAULT 0,
+  owner_risk_at   TEXT,     -- the owner confirmed they lend at their own risk
+  owner_late_at   TEXT,     -- the owner was told the book is overdue
+  escalated_at    TEXT,     -- admins (and whoever invited the borrower) were told it's 2 weeks overdue
+  handed_over_at  TEXT,     -- when the book changed hands; the loan period starts then
+  renewals        INTEGER NOT NULL DEFAULT 0,  -- extra weeks the owner has allowed (capped)
+  renewal_asked_at TEXT,    -- the borrower asked for one more week; waiting for the owner
+  settled_at      TEXT      -- a lost book was replaced or paid for (the owner says so)
+);`;
+
 // Members' phone numbers are stored only so the WhatsApp bot can message them. They are never
 // returned by any query used to show data to other members.
 const SCHEMA = `
@@ -54,32 +79,25 @@ CREATE TABLE IF NOT EXISTS books (
   status     TEXT NOT NULL DEFAULT 'available' CHECK (status IN ('available', 'lent')),
   batch_id   TEXT,
   created_at TEXT NOT NULL,
-  never_overdue_only INTEGER NOT NULL DEFAULT 0     -- the owner lends it only to "Never overdue" readers
+  never_overdue_only INTEGER NOT NULL DEFAULT 0,    -- the owner lends it only to "Never overdue" readers
+  lost_at    TEXT                                    -- marked lost (30+ days overdue); hidden from searches
 );
 CREATE INDEX IF NOT EXISTS books_owner ON books(owner_id);
 
-CREATE TABLE IF NOT EXISTS requests (
-  id              INTEGER PRIMARY KEY,
-  book_id         INTEGER NOT NULL REFERENCES books(id) ON DELETE CASCADE,
-  borrower_id     INTEGER NOT NULL REFERENCES members(id) ON DELETE CASCADE,
-  owner_id        INTEGER NOT NULL REFERENCES members(id) ON DELETE CASCADE,
-  status          TEXT NOT NULL DEFAULT 'pending'
-                  CHECK (status IN ('pending', 'accepted', 'declined', 'cancelled', 'returned')),
-  note            TEXT NOT NULL DEFAULT '',
-  created_at      TEXT NOT NULL,
-  decided_at      TEXT,
-  due_at          TEXT,
-  closed_at       TEXT,
-  reminders       INTEGER NOT NULL DEFAULT 0,
-  borrower_shared INTEGER NOT NULL DEFAULT 0,
-  owner_shared    INTEGER NOT NULL DEFAULT 0,
-  owner_risk_at   TEXT,     -- the owner confirmed they lend at their own risk
-  owner_late_at   TEXT,     -- the owner was told the book is overdue
-  escalated_at    TEXT,     -- admins (and whoever invited the borrower) were told it's 2 weeks overdue
-  handed_over_at  TEXT      -- when the book changed hands; the loan period starts then
-);
+${REQUESTS_TABLE}
 CREATE INDEX IF NOT EXISTS requests_borrower ON requests(borrower_id);
 CREATE INDEX IF NOT EXISTS requests_owner ON requests(owner_id);
+
+-- Members waiting for a book that's lent out. When it's back, the first in line gets it kept for them
+-- for a while (offered_at), then the next.
+CREATE TABLE IF NOT EXISTS holds (
+  id         INTEGER PRIMARY KEY,
+  book_id    INTEGER NOT NULL REFERENCES books(id) ON DELETE CASCADE,
+  member_id  INTEGER NOT NULL REFERENCES members(id) ON DELETE CASCADE,
+  created_at TEXT NOT NULL,
+  offered_at TEXT,
+  UNIQUE (book_id, member_id)
+);
 
 CREATE TABLE IF NOT EXISTS messages (
   id         INTEGER PRIMARY KEY,
@@ -201,6 +219,8 @@ function migrate(db) {
   } else if (!bookCols.has('never_overdue_only')) {
     db.exec('ALTER TABLE books ADD COLUMN never_overdue_only INTEGER NOT NULL DEFAULT 0');
   }
+  if (!bookCols.has('lost_at')) db.exec('ALTER TABLE books ADD COLUMN lost_at TEXT');
+  addLostStatus(db);
   // Neighbour verification ("Signed copy") was removed; don't keep who vouched for whom.
   db.exec('DROP TABLE IF EXISTS vouches');
   for (const col of ['verified_place', 'verified_at', 'verified_by']) {
@@ -211,6 +231,35 @@ function migrate(db) {
   const usageCols = new Set(db.prepare('PRAGMA table_info(usage)').all().map((c) => c.name));
   if (!usageCols.has('photos')) db.exec('ALTER TABLE usage ADD COLUMN photos INTEGER NOT NULL DEFAULT 0');
   if (!usageCols.has('photo_cost')) db.exec('ALTER TABLE usage ADD COLUMN photo_cost REAL NOT NULL DEFAULT 0');
+}
+
+/**
+ * Older databases don't allow a loan to be 'lost' (a CHECK rule), and SQLite can't change that rule in
+ * place, so the requests table is rebuilt once, as SQLite documents: a new table, the rows copied
+ * across, the old one dropped and the new one renamed. Foreign keys are off meanwhile, so messages
+ * and notifications that point at requests are kept.
+ */
+function addLostStatus(db) {
+  const { sql } = db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'requests'").get();
+  if (sql.includes("'lost'")) return;
+  const old = db.prepare('PRAGMA table_info(requests)').all().map((c) => c.name);
+  db.exec('PRAGMA foreign_keys = OFF');
+  try {
+    db.exec('BEGIN');
+    db.exec(REQUESTS_TABLE.replace('CREATE TABLE IF NOT EXISTS requests', 'CREATE TABLE requests_new'));
+    const fresh = new Set(db.prepare('PRAGMA table_info(requests_new)').all().map((c) => c.name));
+    const cols = old.filter((c) => fresh.has(c)).join(', ');
+    db.exec(`INSERT INTO requests_new (${cols}) SELECT ${cols} FROM requests`);
+    db.exec('DROP TABLE requests');
+    db.exec('ALTER TABLE requests_new RENAME TO requests');
+    db.exec('CREATE INDEX IF NOT EXISTS requests_borrower ON requests(borrower_id); CREATE INDEX IF NOT EXISTS requests_owner ON requests(owner_id);');
+    db.exec('COMMIT');
+  } catch (err) {
+    db.exec('ROLLBACK');
+    throw err;
+  } finally {
+    db.exec('PRAGMA foreign_keys = ON');
+  }
 }
 
 /** "Green Park Tower, Saket": the rough location shown next to a member's name. Never a full address. */
@@ -515,6 +564,7 @@ export class Store {
     const rows = this.q(
       `SELECT b.*, m.name AS owner_name, m.building AS owner_building, m.locality AS owner_locality
        FROM books b JOIN members m ON m.id = b.owner_id
+       WHERE b.lost_at IS NULL
        ORDER BY b.created_at DESC, b.id DESC`,
     ).all();
 
@@ -562,8 +612,8 @@ export class Store {
     return this.q(
       `${REQUEST_SELECT}
        WHERE (r.borrower_id = ? OR r.owner_id = ?)
-         AND (r.status IN ('pending', 'accepted') OR r.created_at > ?)
-       ORDER BY CASE r.status WHEN 'pending' THEN 0 WHEN 'accepted' THEN 1 ELSE 2 END, r.id DESC`,
+         AND (r.status IN ('pending', 'accepted') OR (r.status = 'lost' AND r.settled_at IS NULL) OR r.created_at > ?)
+       ORDER BY CASE r.status WHEN 'pending' THEN 0 WHEN 'accepted' THEN 1 WHEN 'lost' THEN 2 ELSE 3 END, r.id DESC`,
     ).all(memberId, memberId, since);
   }
 
@@ -585,6 +635,48 @@ export class Store {
     return this.q(`SELECT COUNT(*) AS n FROM requests WHERE borrower_id = ? AND status = 'accepted'`).get(borrowerId).n;
   }
 
+  /** Books marked lost while this member had them, not yet replaced or paid for. */
+  unsettledLostBy(borrowerId) {
+    return this.q(`${REQUEST_SELECT} WHERE r.borrower_id = ? AND r.status = 'lost' AND r.settled_at IS NULL`).all(borrowerId);
+  }
+
+  // ---------- waiting for a lent-out book ----------
+
+  addHold(bookId, memberId) {
+    this.q('INSERT OR IGNORE INTO holds (book_id, member_id, created_at) VALUES (?, ?, ?)').run(bookId, memberId, now());
+  }
+
+  removeHold(bookId, memberId) {
+    return this.q('DELETE FROM holds WHERE book_id = ? AND member_id = ?').run(bookId, memberId).changes > 0;
+  }
+
+  /** Who is waiting for a book, first in line first. */
+  holdsFor(bookId) {
+    return this.q('SELECT * FROM holds WHERE book_id = ? ORDER BY id').all(bookId);
+  }
+
+  countHolds(memberId) {
+    return this.q('SELECT COUNT(*) AS n FROM holds WHERE member_id = ?').get(memberId).n;
+  }
+
+  /** Books that someone is waiting for. */
+  booksWithHolds() {
+    return this.q('SELECT DISTINCT book_id FROM holds').all().map((h) => h.book_id);
+  }
+
+  updateHold(id, fields) {
+    const keys = Object.keys(fields);
+    this.q(`UPDATE holds SET ${keys.map((k) => `${k} = ?`).join(', ')} WHERE id = ?`).run(...keys.map((k) => fields[k]), id);
+  }
+
+  clearHolds(bookId) {
+    return this.q('DELETE FROM holds WHERE book_id = ? RETURNING member_id').all(bookId).map((h) => h.member_id);
+  }
+
+  setBookLost(bookId, at) {
+    this.q('UPDATE books SET lost_at = ? WHERE id = ?').run(at, bookId);
+  }
+
   /** Books this member has borrowed and not yet returned. */
   borrowedBy(borrowerId) {
     return this.q(`${REQUEST_SELECT} WHERE r.borrower_id = ? AND r.status = 'accepted' ORDER BY r.due_at`).all(borrowerId);
@@ -600,11 +692,12 @@ export class Store {
               COALESCE(SUM(borrower_id = ? AND status = 'returned' AND closed_at <= due_at), 0) AS onTime,
               COALESCE(SUM(borrower_id = ? AND status = 'accepted'), 0) AS borrowing,
               COALESCE(SUM(borrower_id = ? AND status = 'accepted' AND due_at < ?), 0) AS overdue,
-              COALESCE(SUM(owner_id = ? AND status IN ('accepted', 'returned') AND handed_over_at IS NOT NULL), 0) AS lent
+              COALESCE(SUM(borrower_id = ? AND status = 'lost'), 0) AS lost,
+              COALESCE(SUM(owner_id = ? AND status IN ('accepted', 'returned', 'lost') AND handed_over_at IS NOT NULL), 0) AS lent
        FROM requests WHERE borrower_id = ? OR owner_id = ?`,
-    ).get(memberId, memberId, memberId, memberId, at, memberId, memberId, memberId);
-    const books = this.q('SELECT COUNT(*) AS n FROM books WHERE owner_id = ?').get(memberId).n;
-    return { returned: r.returned, onTime: r.onTime, borrowing: r.borrowing, overdue: r.overdue, lent: r.lent, books };
+    ).get(memberId, memberId, memberId, memberId, at, memberId, memberId, memberId, memberId);
+    const books = this.q('SELECT COUNT(*) AS n FROM books WHERE owner_id = ? AND lost_at IS NULL').get(memberId).n;
+    return { returned: r.returned, onTime: r.onTime, borrowing: r.borrowing, overdue: r.overdue, lost: r.lost, lent: r.lent, books };
   }
 
   updateRequest(id, fields) {
