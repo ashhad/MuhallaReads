@@ -216,6 +216,7 @@ test('due-soon and overdue reminders, once each', async () => {
   const { w, dune } = await withDune();
   const r = await w.library.want(w.member(BILAL), dune.id);
   await w.library.decide(w.member(AYESHA), r.id, true, { understood: true });
+  await w.library.handOver(w.member(BILAL), r.id); // the 21 days start now
   w.transport.clear();
 
   w.time.now += 20 * 86400_000; // due in 1 day
@@ -250,6 +251,7 @@ test('marking a lent book available closes its loan', async () => {
   const { w, dune } = await withDune();
   const r = await w.library.want(w.member(BILAL), dune.id);
   await w.library.decide(w.member(AYESHA), r.id, true, { understood: true });
+  await w.library.handOver(w.member(AYESHA), r.id);
   await w.library.setAvailability(w.member(AYESHA), dune.id, 'available');
   assert.equal(w.store.requestById(r.id).status, 'returned');
 });

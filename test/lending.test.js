@@ -26,7 +26,8 @@ async function world(settings) {
 const lend = async (w, owner, borrower, title) => {
   const { added } = await w.library.addBooks(w.member(owner), [{ title }]);
   const r = await w.library.want(w.member(borrower), added[0].id);
-  return w.library.decide(w.member(owner), r.id, true, understood);
+  await w.library.decide(w.member(owner), r.id, true, understood);
+  return w.library.handOver(w.member(borrower), r.id); // picked up straight away
 };
 
 test('nobody can have more than 2 books borrowed at once', async () => {
@@ -46,6 +47,7 @@ test('nobody can have more than 2 books borrowed at once', async () => {
   await assert.rejects(w2.library.decide(w2.member(AYESHA), asks[2].id, true, understood), /Chand already has 2 borrowed books/);
 
   // Returning one frees a place.
+  await w2.library.handOver(w2.member(CHAND), asks[0].id);
   await w2.library.markReturned(w2.member(AYESHA), asks[0].id);
   assert.equal((await w2.library.decide(w2.member(AYESHA), asks[2].id, true, understood)).status, 'accepted');
 });
@@ -66,6 +68,7 @@ test("the owner sees the borrower's record with each request", async () => {
   const r = await w.library.want(w.member(CHAND), added[0].id);
   assert.match(w.transport.to(BILAL).at(-1).text, /📋 First time borrowing/);
   await w.library.decide(w.member(BILAL), r.id, true, understood);
+  await w.library.handOver(w.member(CHAND), r.id);
   await w.library.markReturned(w.member(BILAL), r.id);
   w.transport.clear();
   await w.library.want(w.member(CHAND), added[1].id);

@@ -9,6 +9,7 @@ import { identifyBooks, parseDataUrl, VisionError } from './vision.js';
 import { createBot, cleanName, cleanPlace } from './bot.js';
 import { createLibrary, LibraryError, approvalTag } from './library.js';
 import { agreedToTerms } from './terms.js';
+import { BADGES } from './badges.js';
 import { createNotifier } from './notifier.js';
 import { createPhotoLimits, PhotoLimitError } from './photos.js';
 import { createMetaTransport, whatsappRouter } from './whatsapp.js';
@@ -73,6 +74,7 @@ export function createApp({ store, deps = {}, settings = config } = {}) {
       stats: store.stats(),
       loanDays: settings.loanDays,
       maxBorrowed: settings.maxBorrowed ?? 2,
+      badges: BADGES,
     });
   });
 
@@ -121,6 +123,9 @@ export function createApp({ store, deps = {}, settings = config } = {}) {
     status: m.status, // 'pending' until an admin approves them
     termsAccepted: agreedToTerms(m),
     termsChanged: Boolean(m.terms_at) && !agreedToTerms(m), // agreed to an older version
+    badges: library.badgesFor(m),
+    verified: library.isVerified(m),
+    admin: isAdmin(m),
     bookAlerts: Boolean(m.book_alerts),
     // Their personal invite code (the app builds the link), once they're in.
     invite: m.status === 'active' ? store.refCodeFor(m.id) : null,
@@ -219,8 +224,11 @@ export function createApp({ store, deps = {}, settings = config } = {}) {
     // Newcomers see the titles, but not who owns them, until they're approved.
     if (req.member.status !== 'active') {
       results = results.map((g) => ({ ...g, copies: g.copies.map((c) => ({ bookId: c.bookId, status: c.status, owner: null })) }));
-    } else if (!q.trim()) {
-      store.markBooksSeen(req.member.id); // they've seen what's new; no "while you were away" for these
+    } else {
+      if (!q.trim()) store.markBooksSeen(req.member.id); // they've seen what's new; no "while you were away" for these
+      const badges = new Map(); // each owner's badges, worked out once per search
+      const badgesOf = (id) => badges.get(id) ?? badges.set(id, library.badgesFor(id)).get(id);
+      for (const g of results) for (const c of g.copies) c.owner.badges = badgesOf(c.owner.id);
     }
     res.json({ results });
   });
@@ -301,10 +309,16 @@ export function createApp({ store, deps = {}, settings = config } = {}) {
     });
   });
 
+  // { status: 'available' | 'lent' } or { verifiedOnly: true | false } (lend only to verified neighbours)
   api.patch('/books/:id', async (req, res) => {
-    const status = req.body?.status;
-    if (!['available', 'lent'].includes(status)) throw new HttpError(400, 'Unknown status.');
-    const book = await library.setAvailability(req.member, req.params.id, status);
+    const { status, verifiedOnly } = req.body || {};
+    let book;
+    if (typeof verifiedOnly === 'boolean') {
+      book = store.setVerifiedOnly(req.member.id, Number(req.params.id), verifiedOnly);
+    } else {
+      if (!['available', 'lent'].includes(status)) throw new HttpError(400, 'Unknown status.');
+      book = await library.setAvailability(req.member, req.params.id, status);
+    }
     if (!book) throw new HttpError(404, 'Book not found.');
     res.json({ book });
   });
@@ -328,12 +342,13 @@ export function createApp({ store, deps = {}, settings = config } = {}) {
       note: r.note,
       book: { id: r.book_id, title: r.book_title, author: r.book_author, cover: r.book_cover },
       other: iOwn
-        ? { name: r.borrower_name, place: placeOf({ building: r.borrower_building, locality: r.borrower_locality }) }
-        : { name: r.owner_name, place: placeOf({ building: r.owner_building, locality: r.owner_locality }) },
+        ? { id: r.borrower_id, name: r.borrower_name, place: placeOf({ building: r.borrower_building, locality: r.borrower_locality }), badges: library.badgesFor(r.borrower_id) }
+        : { id: r.owner_id, name: r.owner_name, place: placeOf({ building: r.owner_building, locality: r.owner_locality }), badges: library.badgesFor(r.owner_id) },
       otherPhone: otherShared ? store.memberById(iOwn ? r.borrower_id : r.owner_id)?.phone || null : null,
       iShared: Boolean(iOwn ? r.owner_shared : r.borrower_shared),
       createdAt: r.created_at,
       dueAt: r.due_at,
+      handedOver: Boolean(r.handed_over_at), // until then, the loan period hasn't started
       // For deciding whether to lend: how the borrower has done so far.
       ...(iOwn && ['pending', 'accepted'].includes(r.status) && { record: library.borrowerRecord(r.borrower_id) }),
     };
@@ -361,6 +376,7 @@ export function createApp({ store, deps = {}, settings = config } = {}) {
     decline: (m, id) => library.decide(m, id, false),
     cancel: (m, id) => library.cancel(m, id),
     returned: (m, id) => library.markReturned(m, id),
+    handover: (m, id) => library.handOver(m, id),
     share: async (m, id) => (await library.shareNumber(m, id), store.requestById(Number(id))),
     block: (m, id) => (library.block(m, id), store.requestById(Number(id))),
   };
@@ -382,6 +398,22 @@ export function createApp({ store, deps = {}, settings = config } = {}) {
   api.post('/requests/:id/messages', async (req, res) => {
     const m = await library.sendMessage(req.member, req.params.id, req.body?.body);
     res.json({ message: { id: m.id, mine: true, body: m.body, at: m.created_at } });
+  });
+
+  // ---------- members: profiles and verified neighbours ----------
+
+  api.get('/members/:id', requireApproved, (req, res) => res.json({ profile: library.profileOf(req.member, req.params.id) }));
+
+  // A verified neighbour (or an admin) vouches that someone lives in their building.
+  api.post('/members/:id/vouch', requireApproved, async (req, res) => {
+    const result = await library.vouch(req.member, req.params.id);
+    res.json({ ...result, profile: library.profileOf(req.member, req.params.id) });
+  });
+
+  // Admins: { verified: true | false }
+  api.post('/members/:id/verify', requireAdmin, async (req, res) => {
+    await library.setVerified(req.member, req.params.id, req.body?.verified === true);
+    res.json({ profile: library.profileOf(req.member, req.params.id) });
   });
 
   // ---------- wishlist ----------

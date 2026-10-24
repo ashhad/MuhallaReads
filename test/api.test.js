@@ -67,7 +67,12 @@ test('borrowing over the API never leaks phone numbers until shared', async () =
   const dune = added.data.added.find((x) => x.title === 'Dune');
 
   const search = await call('/api/books?q=dune', { token: b });
-  assert.deepEqual(search.data.results[0].copies[0].owner, { id: store.memberByPhone(AYESHA).id, name: 'Ayesha', place: 'Green Park Tower, Saket' });
+  assert.deepEqual(search.data.results[0].copies[0].owner, {
+    id: store.memberByPhone(AYESHA).id,
+    name: 'Ayesha',
+    place: 'Green Park Tower, Saket',
+    badges: ['signed', 'fresh'], // an admin counts as a verified neighbour
+  });
   assert.doesNotMatch(search.raw, /9198000/);
 
   const req = await call('/api/requests', { method: 'POST', token: b, body: { bookId: dune.id, note: 'Sunday?' } });
@@ -76,7 +81,7 @@ test('borrowing over the API never leaks phone numbers until shared', async () =
   assert.equal(transport.to(AYESHA).at(-1).name, 'book_request'); // Ayesha never messaged the bot
 
   const asked = (await call('/api/requests', { token: a })).data.requests.find((r) => r.id === id);
-  assert.equal(asked.record, 'First time borrowing'); // what Ayesha sees before deciding
+  assert.equal(asked.record, 'First time borrowing · 📰 Fresh off the press'); // what Ayesha sees before deciding
   const understood = { understood: true };
   assert.equal((await call(`/api/requests/${id}/accept`, { method: 'POST', token: b, body: understood })).status, 400); // not the owner
   const unconfirmed = await call(`/api/requests/${id}/accept`, { method: 'POST', token: a });
@@ -85,6 +90,10 @@ test('borrowing over the API never leaks phone numbers until shared', async () =
   const acc = await call(`/api/requests/${id}/accept`, { method: 'POST', token: a, body: understood });
   assert.equal(acc.data.request.status, 'accepted');
   assert.equal(store.requestById(id).owner_risk_at !== null, true);
+  assert.equal(acc.data.request.handedOver, false); // the 21 days start when the book changes hands
+  const got = await call(`/api/requests/${id}/handover`, { method: 'POST', token: b });
+  assert.equal(got.data.request.handedOver, true);
+  assert.ok(Date.parse(got.data.request.dueAt) - Date.now() > 20.9 * 86400_000);
 
   await call(`/api/requests/${id}/messages`, { method: 'POST', token: b, body: { body: 'Hi! Block D here.' } });
   const thread = await call(`/api/requests/${id}/messages`, { token: a });

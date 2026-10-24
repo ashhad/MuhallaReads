@@ -28,7 +28,20 @@ CREATE TABLE IF NOT EXISTS members (
   nudged_at       TEXT,                            -- last paid template, for "one per absence"
   terms_at        TEXT,                            -- when they agreed to the Terms (terms.html)
   terms_version   TEXT,                            -- which version (src/terms.js)
-  terms_via       TEXT                             -- where: 'whatsapp' or 'app'
+  terms_via       TEXT,                            -- where: 'whatsapp' or 'app'
+  -- "Signed copy" (verified neighbour): the place they were verified at; moving clears it.
+  verified_place  TEXT,
+  verified_at     TEXT,
+  verified_by     INTEGER                          -- the admin who verified them; NULL = two neighbours vouched
+);
+
+-- Verified neighbours vouching that someone lives in their building (two make a "Signed copy").
+CREATE TABLE IF NOT EXISTS vouches (
+  member_id  INTEGER NOT NULL REFERENCES members(id) ON DELETE CASCADE,
+  voucher_id INTEGER NOT NULL REFERENCES members(id) ON DELETE CASCADE,
+  building   TEXT NOT NULL,                        -- normalised, as vouched for
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (member_id, voucher_id)
 );
 
 CREATE TABLE IF NOT EXISTS sessions (
@@ -53,7 +66,8 @@ CREATE TABLE IF NOT EXISTS books (
   cover_url  TEXT,
   status     TEXT NOT NULL DEFAULT 'available' CHECK (status IN ('available', 'lent')),
   batch_id   TEXT,
-  created_at TEXT NOT NULL
+  created_at TEXT NOT NULL,
+  verified_only INTEGER NOT NULL DEFAULT 0          -- the owner lends it only to verified neighbours
 );
 CREATE INDEX IF NOT EXISTS books_owner ON books(owner_id);
 
@@ -74,7 +88,8 @@ CREATE TABLE IF NOT EXISTS requests (
   owner_shared    INTEGER NOT NULL DEFAULT 0,
   owner_risk_at   TEXT,     -- the owner confirmed they lend at their own risk
   owner_late_at   TEXT,     -- the owner was told the book is overdue
-  escalated_at    TEXT      -- admins (and whoever invited the borrower) were told it's 2 weeks overdue
+  escalated_at    TEXT,     -- admins (and whoever invited the borrower) were told it's 2 weeks overdue
+  handed_over_at  TEXT      -- when the book changed hands; the loan period starts then
 );
 CREATE INDEX IF NOT EXISTS requests_borrower ON requests(borrower_id);
 CREATE INDEX IF NOT EXISTS requests_owner ON requests(owner_id);
@@ -172,6 +187,9 @@ function migrate(db) {
     terms_at: 'TEXT',
     terms_version: 'TEXT',
     terms_via: 'TEXT',
+    verified_place: 'TEXT',
+    verified_at: 'TEXT',
+    verified_by: 'INTEGER',
   };
   const cols = new Set(db.prepare('PRAGMA table_info(members)').all().map((c) => c.name));
   for (const [col, type] of Object.entries(added)) {
@@ -187,6 +205,13 @@ function migrate(db) {
   for (const col of ['owner_risk_at', 'owner_late_at', 'escalated_at']) {
     if (!requestCols.has(col)) db.exec(`ALTER TABLE requests ADD COLUMN ${col} TEXT`);
   }
+  if (!requestCols.has('handed_over_at')) {
+    db.exec('ALTER TABLE requests ADD COLUMN handed_over_at TEXT');
+    // Loans from before hand-overs were confirmed: the book changed hands when it was accepted.
+    db.exec("UPDATE requests SET handed_over_at = decided_at WHERE status IN ('accepted', 'returned')");
+  }
+  const bookCols = new Set(db.prepare('PRAGMA table_info(books)').all().map((c) => c.name));
+  if (!bookCols.has('verified_only')) db.exec('ALTER TABLE books ADD COLUMN verified_only INTEGER NOT NULL DEFAULT 0');
   const sessionCols = new Set(db.prepare('PRAGMA table_info(sessions)').all().map((c) => c.name));
   if (!sessionCols.has('last_used_at')) db.exec('ALTER TABLE sessions ADD COLUMN last_used_at TEXT');
   const usageCols = new Set(db.prepare('PRAGMA table_info(usage)').all().map((c) => c.name));
@@ -464,6 +489,10 @@ export class Store {
     this.q('UPDATE books SET status = ? WHERE id = ?').run(status, bookId);
   }
 
+  setVerifiedOnly(ownerId, bookId, on) {
+    return this.q('UPDATE books SET verified_only = ? WHERE id = ? AND owner_id = ? RETURNING *').get(on ? 1 : 0, bookId, ownerId);
+  }
+
   setStatus(ownerId, bookId, status) {
     return this.q('UPDATE books SET status = ? WHERE id = ? AND owner_id = ? RETURNING *').get(status, bookId, ownerId);
   }
@@ -514,6 +543,7 @@ export class Store {
       g.copies.push({
         bookId: r.id,
         status: r.status,
+        verifiedOnly: Boolean(r.verified_only),
         owner: { id: r.owner_id, name: r.owner_name, place: placeOf({ building: r.owner_building, locality: r.owner_locality }) },
       });
     }
@@ -566,16 +596,36 @@ export class Store {
     return this.q(`${REQUEST_SELECT} WHERE r.borrower_id = ? AND r.status = 'accepted' ORDER BY r.due_at`).all(borrowerId);
   }
 
-  /** How a member has done as a borrower: returned (and on time), borrowing now (and overdue). */
-  borrowerRecord(borrowerId, at = now()) {
+  /**
+   * How a member has done: as a borrower, books returned (and on time) and borrowing now (and overdue);
+   * as a lender, books that changed hands; and books they list.
+   */
+  memberRecord(memberId, at = now()) {
     const r = this.q(
-      `SELECT COALESCE(SUM(status = 'returned'), 0) AS returned,
-              COALESCE(SUM(status = 'returned' AND closed_at <= due_at), 0) AS onTime,
-              COALESCE(SUM(status = 'accepted'), 0) AS borrowing,
-              COALESCE(SUM(status = 'accepted' AND due_at < ?), 0) AS overdue
-       FROM requests WHERE borrower_id = ?`,
-    ).get(at, borrowerId);
-    return { returned: r.returned, onTime: r.onTime, borrowing: r.borrowing, overdue: r.overdue };
+      `SELECT COALESCE(SUM(borrower_id = ? AND status = 'returned'), 0) AS returned,
+              COALESCE(SUM(borrower_id = ? AND status = 'returned' AND closed_at <= due_at), 0) AS onTime,
+              COALESCE(SUM(borrower_id = ? AND status = 'accepted'), 0) AS borrowing,
+              COALESCE(SUM(borrower_id = ? AND status = 'accepted' AND due_at < ?), 0) AS overdue,
+              COALESCE(SUM(owner_id = ? AND status IN ('accepted', 'returned') AND handed_over_at IS NOT NULL), 0) AS lent
+       FROM requests WHERE borrower_id = ? OR owner_id = ?`,
+    ).get(memberId, memberId, memberId, memberId, at, memberId, memberId, memberId);
+    const books = this.q('SELECT COUNT(*) AS n FROM books WHERE owner_id = ?').get(memberId).n;
+    return { returned: r.returned, onTime: r.onTime, borrowing: r.borrowing, overdue: r.overdue, lent: r.lent, books };
+  }
+
+  // ---------- verified neighbours ----------
+
+  setVerified(id, { place = null, by = null, at = now() } = {}) {
+    this.q('UPDATE members SET verified_place = ?, verified_at = ?, verified_by = ? WHERE id = ?').run(place, place ? at : null, by, id);
+    if (!place) this.q('DELETE FROM vouches WHERE member_id = ?').run(id);
+  }
+
+  addVouch(memberId, voucherId, building) {
+    this.q('INSERT OR IGNORE INTO vouches (member_id, voucher_id, building, created_at) VALUES (?, ?, ?, ?)').run(memberId, voucherId, building, now());
+  }
+
+  vouchesFor(memberId, building) {
+    return this.q('SELECT voucher_id FROM vouches WHERE member_id = ? AND building = ?').all(memberId, building).map((v) => v.voucher_id);
   }
 
   updateRequest(id, fields) {

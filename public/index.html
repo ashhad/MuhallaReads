@@ -119,7 +119,7 @@
       <div class="me">
         <div>
           <div class="muted small">Neighbours see you as</div>
-          <strong id="me-name"></strong>
+          <strong id="me-name"></strong> <span id="me-badges"></span>
           <div class="muted small" id="me-place"></div>
         </div>
         <button id="edit-profile" class="btn small">Change</button>
@@ -206,6 +206,9 @@
       </div>
     </form>
   </dialog>
+
+  <!-- Member card: badges and what they've lent and borrowed, opened by tapping a name -->
+  <dialog id="member-card" aria-labelledby="member-card-name"></dialog>
 
   <!-- Book card: introduction and details, opened by tapping a title -->
   <dialog id="book-card" aria-label="Book details"></dialog>

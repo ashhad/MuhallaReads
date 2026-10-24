@@ -212,6 +212,23 @@ input[type=checkbox] { width: 1.2rem; height: 1.2rem; padding: 0; flex: none; ac
 #view-requests h3:first-child { margin-top: .4rem; }
 .note { font-size: .9rem; font-style: italic; margin-top: .3rem; }
 .record { font-size: .85rem; color: var(--muted); margin-top: .3rem; }
+
+/* members: badges and the member card */
+.badge { font-size: .85rem; margin-left: .2rem; }
+.member-link {
+  background: none; border: 0; padding: 0; margin: 0; font: inherit; color: inherit; cursor: pointer;
+  text-decoration: underline; text-decoration-color: var(--line); text-underline-offset: 3px;
+}
+.member-link:hover, .member-link:focus-visible { text-decoration-color: var(--brand); }
+.member-card { display: grid; gap: .4rem; }
+.member-card h3 { margin: 0; font-family: var(--serif); font-weight: 400; font-size: 1.4rem; text-transform: none; letter-spacing: -0.01em; color: var(--text); }
+.badges-full { list-style: none; padding: 0; margin: .4rem 0; display: grid; gap: .55rem; }
+.badges-full li { display: grid; grid-template-columns: 1.8rem 1fr; gap: .4rem; align-items: start; }
+.badge-emoji { font-size: 1.3rem; line-height: 1.2; }
+.facts { display: grid; grid-template-columns: auto 1fr; gap: .25rem .9rem; margin: .4rem 0; font-size: .9rem; }
+.facts dt { color: var(--muted); }
+.facts dd { margin: 0; }
+.check { display: inline-flex; align-items: center; gap: .4rem; margin-top: .35rem; color: var(--muted); }
 .btn.danger { color: var(--danger); }
 .want { margin-left: auto; }
 

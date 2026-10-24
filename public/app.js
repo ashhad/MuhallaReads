@@ -265,6 +265,9 @@ async function openPendingLink() {
 
 function renderMe() {
   $('#me-name').textContent = state.me.name;
+  $('#me-badges').innerHTML = state.me.badges?.length
+    ? `<button type="button" class="member-link" data-member="${state.me.id}" aria-label="My badges">${badgeChips(state.me.badges)}</button>`
+    : '';
   $('#me-place').textContent = state.me.place || 'Add your building or locality';
   const pending = state.me.status === 'pending';
   $('#pending-note').hidden = !pending;
@@ -443,10 +446,12 @@ function ownersHtml(g) {
       const status = c.status === 'lent' ? '<span class="tag lent">lent out</span>' : '<span class="tag ok">available</span>';
       let action = '';
       if (!mine && open) action = `<span class="tag">${open.status === 'pending' ? 'requested' : 'borrowing'}</span>`;
-      else if (!mine && c.status !== 'lent') {
+      else if (!mine && c.status !== 'lent' && c.verifiedOnly && !state.me.verified) {
+        action = '<span class="tag" title="The owner lends this only to verified neighbours">✍️ verified only</span>';
+      } else if (!mine && c.status !== 'lent') {
         action = `<button class="btn small want" data-book="${c.bookId}" data-title="${esc(g.title)}" data-owner="${esc(c.owner.name)}">Request</button>`;
       }
-      const who = mine ? 'You' : `${esc(c.owner.name)}${c.owner.place ? ` <span class="place">· ${esc(c.owner.place)}</span>` : ''}`;
+      const who = mine ? 'You' : `${memberLink(c.owner)}${c.owner.place ? ` <span class="place">· ${esc(c.owner.place)}</span>` : ''}`;
       return `<div class="owner"><span>${who}</span>${status}${action}</div>`;
     })
     .join('');
@@ -472,6 +477,77 @@ async function requestBook(btn) {
   } catch (ex) {
     toast(ex.message);
   }
+}
+
+// ---------- members: badges and the member card ----------
+
+/** A member's badges as small chips; tapping the name shows what each means. */
+function badgeChips(keys = []) {
+  const all = state.config.badges || {};
+  return keys
+    .filter((k) => all[k])
+    .map((k) => `<span class="badge" title="${esc(all[k].name)}" aria-label="${esc(all[k].name)}">${all[k].emoji}</span>`)
+    .join('');
+}
+
+/** A member's name (opens their card) followed by their badges. */
+const memberLink = (m) => `<button type="button" class="member-link" data-member="${m.id}">${esc(m.name)}</button>${badgeChips(m.badges)}`;
+
+document.addEventListener('click', (e) => {
+  const link = e.target.closest('[data-member]');
+  if (link) openMember(Number(link.dataset.member));
+});
+
+async function openMember(id) {
+  let p;
+  try {
+    ({ profile: p } = await api(`/api/members/${id}`));
+  } catch (ex) {
+    return toast(ex.message);
+  }
+  const all = state.config.badges || {};
+  const since = new Date(p.since).toLocaleDateString('en-IN', { month: 'long', year: 'numeric' });
+  const vouchLabel = state.me.admin ? '✍️ Verify as a neighbour' : `✍️ I know they live in ${p.place}`;
+  const d = $('#member-card');
+  d.innerHTML = `<div class="member-card">
+      <h3 id="member-card-name">${esc(p.name)}</h3>
+      ${p.place ? `<div class="muted small">${esc(p.place)}</div>` : ''}
+      ${
+        p.badges.length
+          ? `<ul class="badges-full">${p.badges
+              .map((k) => `<li><span class="badge-emoji" aria-hidden="true">${all[k].emoji}</span><div><strong>${esc(all[k].name)}</strong><div class="muted small">${esc(all[k].about)}</div></div></li>`)
+              .join('')}</ul>`
+          : '<p class="muted small">No badges yet.</p>'
+      }
+      <dl class="facts">
+        <dt>Member since</dt><dd>${esc(since)}</dd>
+        ${p.invitedBy ? `<dt>Invited by</dt><dd>${esc(p.invitedBy)}</dd>` : ''}
+        <dt>Books listed</dt><dd>${p.books}</dd>
+        <dt>Books lent</dt><dd>${p.lent}</dd>
+        <dt>Borrowed and returned</dt><dd>${p.returned}</dd>
+      </dl>
+      ${p.vouched ? '<p class="muted small">You’ve vouched for them. One more verified neighbour from their building makes them a Signed copy.</p>' : ''}
+      <div class="row end">
+        <button type="button" class="btn" data-close>Close</button>
+        ${p.canVouch ? `<button type="button" class="btn primary" data-vouch>${esc(vouchLabel)}</button>` : ''}
+        ${p.canUnverify ? '<button type="button" class="btn danger" data-unverify>Remove Signed copy</button>' : ''}
+      </div>
+    </div>`;
+  d.querySelector('[data-close]').addEventListener('click', () => d.close());
+  d.querySelector('[data-vouch]')?.addEventListener('click', async () => {
+    try {
+      const r = await api(`/api/members/${id}/vouch`, { method: 'POST' });
+      toast(r.verified ? `✍️ ${p.name} is now a Signed copy.` : 'Thanks! One more verified neighbour from their building, and they’re a Signed copy.');
+      d.close();
+    } catch (ex) {
+      toast(ex.message);
+    }
+  });
+  d.querySelector('[data-unverify]')?.addEventListener('click', async () => {
+    await api(`/api/members/${id}/verify`, { method: 'POST', body: { verified: false } }).catch((ex) => toast(ex.message));
+    d.close();
+  });
+  if (!d.open) d.showModal();
 }
 
 // ---------- book card: tap a title for its introduction ----------
@@ -562,9 +638,10 @@ async function refreshRequests() {
 }
 
 const STATUS_TEXT = { pending: 'waiting', accepted: 'on loan', declined: 'declined', cancelled: 'cancelled', returned: 'returned' };
+const statusText = (r) => (r.status === 'accepted' && !r.handedOver ? 'to hand over' : STATUS_TEXT[r.status]);
 
 function requestCard(r) {
-  const other = `${esc(r.other.name)}${r.other.place ? ` <span class="place">(${esc(r.other.place)})</span>` : ''}`;
+  const other = `${memberLink(r.other)}${r.other.place ? ` <span class="place">(${esc(r.other.place)})</span>` : ''}`;
   const who = r.role === 'owner' ? `${other} → you` : `from ${other}`;
   const buttons = [];
   if (r.role === 'owner' && r.status === 'pending') {
@@ -572,16 +649,21 @@ function requestCard(r) {
     buttons.push(`<button class="btn small" data-act="decline" data-id="${r.id}">Decline</button>`);
   }
   if (r.status === 'accepted') buttons.push(`<button class="btn small primary" data-chat="${r.id}">💬 Chat</button>`);
-  if (r.role === 'owner' && r.status === 'accepted') {
+  if (r.status === 'accepted' && !r.handedOver) {
+    // The loan period starts when the book changes hands; either of them can confirm it.
+    buttons.push(`<button class="btn small" data-act="handover" data-id="${r.id}">📦 ${r.role === 'owner' ? 'Handed over' : 'Got the book'}</button>`);
+    buttons.push(`<button class="btn small" data-act="cancel" data-id="${r.id}">Call off</button>`);
+  }
+  if (r.role === 'owner' && r.status === 'accepted' && r.handedOver) {
     buttons.push(`<button class="btn small" data-act="returned" data-id="${r.id}">Got it back</button>`);
   }
   if (r.role === 'borrower' && r.status === 'pending') {
     buttons.push(`<button class="btn small" data-act="cancel" data-id="${r.id}">Cancel</button>`);
   }
-  const due = r.status === 'accepted' && r.dueAt ? ` · due ${fmtDate(r.dueAt)}` : '';
+  const due = r.status === 'accepted' && r.handedOver && r.dueAt ? ` · due ${fmtDate(r.dueAt)}` : '';
   return `<li class="book" data-request="${r.id}">${cover(r.book)}<div class="info">
       ${titleLink(r.book)}
-      <div class="author">${who} · <span class="tag ${r.status === 'accepted' ? 'lent' : ''}">${STATUS_TEXT[r.status]}</span>${due}</div>
+      <div class="author">${who} · <span class="tag ${r.status === 'accepted' ? 'lent' : ''}">${statusText(r)}</span>${due}</div>
       ${r.note && r.status === 'pending' ? `<div class="note">“${esc(r.note)}”</div>` : ''}
       ${r.record && r.status === 'pending' ? `<div class="record">📋 ${esc(r.record)}</div>` : ''}
       ${buttons.length ? `<div class="actions">${buttons.join('')}</div>` : ''}
@@ -622,10 +704,15 @@ async function showRequestList() {
         if (ok === null) return;
         body = { understood: true };
       }
+      if (btn.dataset.act === 'cancel' && state.requests.find((x) => x.id === Number(btn.dataset.id))?.status === 'accepted') {
+        const ok = await sheet({ title: 'Call off this loan?', text: 'The book hasn’t changed hands yet. It goes back to being available.', ok: 'Call it off' });
+        if (ok === null) return;
+      }
       btn.disabled = true;
       try {
         await api(`/api/requests/${btn.dataset.id}/${btn.dataset.act}`, { method: 'POST', body });
         if (btn.dataset.act === 'accept') toast('Accepted! Use Chat to arrange the hand-over.');
+        if (btn.dataset.act === 'handover') toast('Noted. The loan period starts now.');
       } catch (ex) {
         toast(ex.message);
       }
@@ -649,7 +736,7 @@ async function openThread(id) {
   const r = data.request;
   $('#thread-head').innerHTML = `<div class="book small">${cover(r.book)}<div class="info">
       ${titleLink(r.book)}
-      <div class="author">${r.role === 'owner' ? 'Lending to' : 'Borrowing from'} ${esc(r.other.name)}${r.other.place ? ` (${esc(r.other.place)})` : ''}${r.dueAt ? ` · due ${fmtDate(r.dueAt)}` : ''}</div></div></div>
+      <div class="author">${r.role === 'owner' ? 'Lending to' : 'Borrowing from'} ${memberLink(r.other)}${r.other.place ? ` (${esc(r.other.place)})` : ''}${r.handedOver && r.dueAt ? ` · due ${fmtDate(r.dueAt)}` : r.status === 'accepted' ? ' · not handed over yet' : ''}</div></div></div>
     ${r.otherPhone ? `<div class="shared">📞 ${esc(r.other.name)} shared their number: <a target="_blank" rel="noopener" href="${esc(waLink(r.otherPhone))}">+${esc(r.otherPhone)}</a></div>` : ''}`;
 
   $('#thread-messages').innerHTML = data.messages.length
@@ -660,9 +747,14 @@ async function openThread(id) {
   const open = r.status === 'accepted';
   $('#thread-form').hidden = !open;
   $('#thread-actions').innerHTML =
+    (open && !r.handedOver ? `<button class="btn small" data-handover>📦 ${r.role === 'owner' ? 'Handed over' : 'Got the book'}</button>` : '') +
     (open && !r.iShared ? `<button class="btn small" data-share>📞 Share my number with ${esc(r.other.name)}</button>` : '') +
     (open && r.iShared ? '<span class="muted small">You shared your number.</span>' : '') +
     `<button class="btn small danger" data-block>Block</button>`;
+  $('#thread-actions [data-handover]')?.addEventListener('click', async () => {
+    await api(`/api/requests/${id}/handover`, { method: 'POST' }).then(() => toast('Noted. The loan period starts now.')).catch((ex) => toast(ex.message));
+    openThread(id);
+  });
   $('#thread-actions [data-share]')?.addEventListener('click', async () => {
     const ok = await sheet({
       title: 'Share your number?',
@@ -1001,7 +1093,9 @@ async function loadMe() {
               <button class="btn small ${b.status === 'lent' ? 'warn' : ''}" data-toggle="${b.id}" data-status="${b.status}">
                 ${b.status === 'lent' ? '🤝 Lent out: mark returned' : '✅ Available: mark lent'}</button>
               <button class="icon-btn" data-del="${b.id}" aria-label="Remove">🗑️</button>
-            </div></div></li>`,
+            </div>
+            <label class="check small"><input type="checkbox" data-vonly="${b.id}" ${b.verified_only ? 'checked' : ''}> Lend only to ✍️ verified neighbours</label>
+            </div></li>`,
         )
         .join('')
     : '<li class="empty">You haven’t added any books yet.</li>';
@@ -1017,6 +1111,11 @@ async function loadMe() {
       const status = btn.dataset.status === 'lent' ? 'available' : 'lent';
       await api(`/api/books/${btn.dataset.toggle}`, { method: 'PATCH', body: { status } }).catch((ex) => toast(ex.message));
       loadMe();
+    }),
+  );
+  $$('#mine [data-vonly]').forEach((box) =>
+    box.addEventListener('change', async () => {
+      await api(`/api/books/${box.dataset.vonly}`, { method: 'PATCH', body: { verifiedOnly: box.checked } }).catch((ex) => toast(ex.message));
     }),
   );
   $$('#mine [data-del]').forEach((btn) =>

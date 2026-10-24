@@ -2,8 +2,9 @@
 // notifications, each with a button that opens the right page of the app.
 // Nobody's phone number is ever revealed unless they explicitly choose to share it with one person.
 import crypto from 'node:crypto';
-import { matchesQuery, placeOf, plainLine, queryWords } from './db.js';
+import { matchesQuery, normText, placeOf, plainLine, queryWords } from './db.js';
 import { agreedToTerms } from './terms.js';
+import { BADGE_RULES, BADGES, badgeLine } from './badges.js';
 
 export class LibraryError extends Error {}
 
@@ -23,6 +24,8 @@ const DAY = 86400_000;
 // Overdue books: the borrower is reminded weekly; at this point admins (and whoever invited the
 // borrower) are told too.
 const ESCALATE_AFTER_DAYS = 14;
+// An accepted loan's clock starts when the book changes hands; if nobody confirms that, after this many days.
+const PICKUP_DAYS = 3;
 
 /** "*Dune* from Ayesha and *Ikigai* from Bilal" */
 export function listLoans(loans) {
@@ -59,12 +62,34 @@ export function createLibrary({ store, notifier, settings, clock = () => new Dat
   /** Most books one member may have borrowed at a time. */
   const maxBorrowed = () => settings.maxBorrowed ?? 2;
 
+  const isAdmin = (m) => Boolean(m && settings.adminPhones?.includes(m.phone)) && m.status === 'active';
+
+  /** A "Signed copy": an admin, or verified at the building/locality they still give. */
+  const isVerified = (m) => Boolean(m) && (isAdmin(m) || (Boolean(m.verified_place) && m.verified_place === normText(placeOf(m))));
+
+  /** The badges a member has earned (keys of BADGES), most special first. */
+  function badgesFor(memberOrId) {
+    const m = typeof memberOrId === 'object' ? memberOrId : store.memberById(memberOrId);
+    if (!m || m.status !== 'active') return [];
+    const at = clock();
+    const r = store.memberRecord(m.id, at.toISOString());
+    const days = (at - new Date(m.created_at)) / DAY;
+    const earned = {
+      signed: isVerified(m),
+      neverOverdue: r.returned >= BADGE_RULES.onTimeReturns && r.onTime === r.returned && !r.overdue,
+      bestseller: r.lent >= BADGE_RULES.lends,
+      fresh: days < BADGE_RULES.freshDays,
+    };
+    earned.classic = earned.signed && earned.neverOverdue && earned.bestseller && days >= BADGE_RULES.classicDays;
+    return Object.keys(BADGES).filter((k) => earned[k]);
+  }
+
   /**
    * What a lender sees about someone asking to borrow: "Returned 4 of 4 on time · has 1 book now ·
-   * invited by Ayesha". Facts only, so it stays friendly.
+   * invited by Ayesha · ✍️ Signed copy". Facts only, so it stays friendly.
    */
   function borrowerRecord(memberId) {
-    const r = store.borrowerRecord(memberId, clock().toISOString());
+    const r = store.memberRecord(memberId, clock().toISOString());
     const m = store.memberById(memberId);
     const inviter = m?.referred_by ? store.memberById(m.referred_by) : null;
     const parts = [];
@@ -74,8 +99,104 @@ export function createLibrary({ store, notifier, settings, clock = () => new Dat
       parts.push(`has ${r.borrowing} book${r.borrowing > 1 ? 's' : ''} now${r.overdue ? ` (${r.overdue} overdue)` : ''}`);
     }
     if (inviter) parts.push(`invited by ${inviter.name}`);
+    const badges = badgesFor(m);
+    if (badges.length) parts.push(badgeLine(badges));
     const text = parts.join(' · ');
     return text.charAt(0).toUpperCase() + text.slice(1);
+  }
+
+  // ---------- verified neighbours ("Signed copy") ----------
+
+  async function markVerified(target, by) {
+    store.setVerified(target.id, { place: normText(placeOf(target)), by: by?.id ?? null });
+    await notifier.notify(target.id, {
+      text:
+        `✍️ You're now a *Signed copy*: ${by ? 'an admin' : 'two neighbours'} confirmed you live in ${placeOf(target)}. ` +
+        'Neighbours see the badge next to your name.',
+      optional: true,
+    });
+  }
+
+  /** An admin marks a member as a verified neighbour (or takes it back). */
+  async function setVerified(admin, targetId, on) {
+    if (!isAdmin(admin)) throw new LibraryError('Only admins can verify neighbours.');
+    const target = store.memberById(Number(targetId));
+    if (!target || target.status !== 'active') throw new LibraryError('No such member.');
+    if (on) {
+      if (!placeOf(target)) throw new LibraryError(`${target.name} hasn't given a building or locality yet.`);
+      await markVerified(target, admin);
+    } else {
+      store.setVerified(target.id, {});
+    }
+    return store.memberById(target.id);
+  }
+
+  /**
+   * A verified neighbour vouches that someone lives in their building. Two such vouches make them a
+   * Signed copy; an admin's vouch does it alone.
+   * @returns {Promise<{verified: boolean, vouches: number}>}
+   */
+  async function vouch(voucher, targetId) {
+    const target = store.memberById(Number(targetId));
+    if (!target || target.status !== 'active') throw new LibraryError('No such member.');
+    if (target.id === voucher.id) throw new LibraryError("You can't vouch for yourself.");
+    if (isVerified(target)) return { verified: true, vouches: 0 };
+    if (isAdmin(voucher)) {
+      await setVerified(voucher, target.id, true);
+      return { verified: true, vouches: 0 };
+    }
+    if (!isVerified(voucher)) throw new LibraryError('Only verified neighbours (✍️ Signed copy) can vouch for others.');
+    const building = normText(target.building);
+    if (!building || building !== normText(voucher.building)) {
+      throw new LibraryError(
+        target.building
+          ? `Only verified neighbours from ${target.building} can vouch for ${target.name}.`
+          : `${target.name} hasn't given a building, so only an admin can verify them.`,
+      );
+    }
+    store.addVouch(target.id, voucher.id, building);
+    // Count vouchers who are still verified and still in that building.
+    const vouches = store
+      .vouchesFor(target.id, building)
+      .map((id) => store.memberById(id))
+      .filter((v) => isVerified(v) && normText(v.building) === building).length;
+    if (vouches >= BADGE_RULES.vouches) {
+      await markVerified(target, null);
+      return { verified: true, vouches };
+    }
+    return { verified: false, vouches };
+  }
+
+  /** What any member may see about another: name, place, badges and counts. Never a phone number. */
+  function profileOf(viewer, targetId) {
+    const target = store.memberById(Number(targetId));
+    if (!target || target.status !== 'active' || store.isBlocked(target.id, viewer.id)) {
+      throw new LibraryError('No such member.');
+    }
+    const r = store.memberRecord(target.id, clock().toISOString());
+    const inviter = target.referred_by ? store.memberById(target.referred_by) : null;
+    const verified = isVerified(target);
+    const building = normText(target.building);
+    const vouched = Boolean(building) && store.vouchesFor(target.id, building).includes(viewer.id);
+    const isMe = target.id === viewer.id;
+    return {
+      id: target.id,
+      name: target.name,
+      place: placeOf(target),
+      badges: badgesFor(target),
+      since: target.created_at,
+      invitedBy: inviter?.name || null,
+      books: r.books,
+      lent: r.lent,
+      returned: r.returned,
+      isMe,
+      verified,
+      vouched,
+      canVouch:
+        !isMe && !verified && !vouched &&
+        (isAdmin(viewer) || (isVerified(viewer) && Boolean(building) && normText(viewer.building) === building)),
+      canUnverify: !isMe && verified && isAdmin(viewer) && !isAdmin(target),
+    };
   }
 
   const otherParty = (r, member) =>
@@ -89,6 +210,12 @@ export function createLibrary({ store, notifier, settings, clock = () => new Dat
     if (book.owner_id === borrower.id) throw new LibraryError('That one is your own copy 🙂');
     if (!agreedToTerms(borrower)) throw new LibraryError('Please agree to the Terms first.');
     if (store.isBlocked(borrower.id, book.owner_id)) throw new LibraryError("You can't request this book.");
+    if (book.verified_only && !isVerified(borrower)) {
+      throw new LibraryError(
+        `${store.memberById(book.owner_id)?.name || 'The owner'} lends *${book.title}* only to verified neighbours (✍️ Signed copy). ` +
+          'An admin, or two verified neighbours from your building, can vouch for you.',
+      );
+    }
     if (book.status === 'lent') throw new LibraryError(`*${book.title}* is lent out right now. Try again later.`);
     if (store.openRequestFor(borrower.id, book.id)) {
       throw new LibraryError(`You've already asked for *${book.title}*. See the Requests tab.`);
@@ -164,8 +291,12 @@ export function createLibrary({ store, notifier, settings, clock = () => new Dat
         `${r.borrower_name} hasn't agreed to the Terms yet, so this can't go ahead. They've been asked to; try again once they have.`,
       );
     }
+    if (book.verified_only && !isVerified(borrower)) {
+      throw new LibraryError(`*${r.book_title}* is for verified neighbours only, and ${r.borrower_name} isn't verified.`);
+    }
     if (!understood) throw new LibraryError('Please confirm that you’re lending at your own risk.');
-    const due = new Date(clock().getTime() + settings.loanDays * DAY).toISOString();
+    // The loan period starts at the hand-over (handOver); until then this allows a few days for pickup.
+    const due = new Date(clock().getTime() + (settings.loanDays + PICKUP_DAYS) * DAY).toISOString();
     const at = clock().toISOString();
     store.updateRequest(r.id, { status: 'accepted', decided_at: at, due_at: due, owner_risk_at: at });
     store.setBookStatus(r.book_id, 'lent');
@@ -174,19 +305,54 @@ export function createLibrary({ store, notifier, settings, clock = () => new Dat
       requestId: r.id,
       text:
         `✅ *${owner.name}* agreed to lend you *${r.book_title}*!\n\n` +
-        'Arrange the pickup in the app’s chat. Your numbers stay private unless one of you chooses to share. ' +
-        `Please return it by ${fmtDate(due)}.`,
+        'Arrange the pickup in the app’s chat. When you have the book, tap *Got the book* in the app: your ' +
+        `${settings.loanDays} days start then. Your numbers stay private unless one of you chooses to share.`,
       link: requestLink(r.id, 'Open chat'),
       template: { name: 'request_update', params: [r.book_title, `${owner.name} agreed to lend it`], url: String(r.id) },
     });
     return store.requestById(r.id);
   }
 
-  function cancel(borrower, requestId) {
-    const r = getRequest(requestId, borrower);
-    if (r.borrower_id !== borrower.id) throw new LibraryError('Only the person who asked can cancel a request.');
+  /**
+   * The borrower cancels a request; or, before the book has changed hands, either of them calls the
+   * loan off. A loan that never started doesn't count in anyone's record.
+   */
+  async function cancel(member, requestId) {
+    const r = getRequest(requestId, member);
+    if (r.status === 'accepted' && !r.handed_over_at) {
+      store.updateRequest(r.id, { status: 'cancelled', closed_at: clock().toISOString() });
+      store.setBookStatus(r.book_id, 'available');
+      const other = otherParty(r, member);
+      await notifier.notify(other.id, {
+        requestId: r.id,
+        text: `${member.name} called off the loan of *${r.book_title}* before it changed hands.`,
+        optional: true,
+      });
+      return store.requestById(r.id);
+    }
+    if (r.borrower_id !== member.id) throw new LibraryError('Only the person who asked can cancel a request.');
     if (r.status !== 'pending') throw new LibraryError(`Request #${r.id} is already ${r.status}.`);
     return store.updateRequest(r.id, { status: 'cancelled', closed_at: clock().toISOString() });
+  }
+
+  /** Either of them confirms the book has changed hands: the loan period starts now. */
+  async function handOver(member, requestId) {
+    const r = getRequest(requestId, member);
+    if (r.status !== 'accepted') throw new LibraryError(`Request #${r.id} isn't an active loan.`);
+    if (r.handed_over_at) return r;
+    const at = clock();
+    const due = new Date(at.getTime() + settings.loanDays * DAY).toISOString();
+    store.updateRequest(r.id, { handed_over_at: at.toISOString(), due_at: due, reminders: 0, owner_late_at: null, escalated_at: null });
+    const other = otherParty(r, member);
+    await notifier.notify(other.id, {
+      requestId: r.id,
+      text:
+        r.owner_id === member.id
+          ? `📦 ${member.name} handed you *${r.book_title}*. Please return it by ${fmtDate(due)}.`
+          : `📦 ${member.name} has *${r.book_title}* now. It's due back on ${fmtDate(due)}.`,
+      optional: true,
+    });
+    return store.requestById(r.id);
   }
 
   async function markReturned(owner, requestId) {
@@ -195,6 +361,7 @@ export function createLibrary({ store, notifier, settings, clock = () => new Dat
       throw new LibraryError(`Only ${r.owner_name} can mark it returned. Hand it back and let them know!`);
     }
     if (r.status !== 'accepted') throw new LibraryError(`Request #${r.id} isn't an active loan.`);
+    if (!r.handed_over_at) return cancel(owner, r.id); // it never left: calling it off, not a return
     store.updateRequest(r.id, { status: 'returned', closed_at: clock().toISOString() });
     store.setBookStatus(r.book_id, 'available');
     await notifier.notify(r.borrower_id, {
@@ -480,6 +647,10 @@ export function createLibrary({ store, notifier, settings, clock = () => new Dat
   async function runReminders(at = clock()) {
     let sent = 0;
     for (const r of store.activeLoans()) {
+      // Nobody confirmed the hand-over: the loan counts as started PICKUP_DAYS after it was accepted.
+      if (!r.handed_over_at && r.decided_at && at.getTime() - Date.parse(r.decided_at) >= PICKUP_DAYS * DAY) {
+        store.updateRequest(r.id, { handed_over_at: new Date(Date.parse(r.decided_at) + PICKUP_DAYS * DAY).toISOString() });
+      }
       const due = Date.parse(r.due_at);
       const overdue = at.getTime() > due;
       const next = due + (r.reminders === 0 ? -2 : 3 + (r.reminders - 1) * 7) * DAY;
@@ -562,7 +733,13 @@ export function createLibrary({ store, notifier, settings, clock = () => new Dat
     decide,
     cancel,
     markReturned,
+    handOver,
     borrowerRecord,
+    badgesFor,
+    isVerified,
+    setVerified,
+    vouch,
+    profileOf,
     canDeleteAccount,
     setAvailability,
     sendMessage,
