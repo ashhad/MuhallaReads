@@ -1,7 +1,7 @@
 # 📚 Muhalla Reads
 
 A private neighbourhood library. Neighbours list the books they own, find the ones they need, and
-borrow them from each other. **Nobody's phone number is ever shown to anyone** unless they choose
+borrow them from each other. **Nobody's phone number is shown to anyone** unless they choose
 to share it with one person.
 
 ## How it works
@@ -10,7 +10,8 @@ The **website** (installable on the home screen, nothing to download) is where e
 happens. **WhatsApp** is used only to join, manage your account, and get notifications.
 
 1. **Join by invite, approved by an admin:** open a member's personal invite link (or use the join
-   code) and message the library's number, then answer two quick questions: your **building or
+   code) and message the library's number, agree to the [Terms](public/terms.html) (members lend and
+   borrow at their own risk), then answer two quick questions: your **building or
    society** and your **locality** (at least one). Neighbours see only your name plus those, e.g.
    "Ayesha · Green Park Tower, Saket", never a flat number or address. An admin is told who you are
    and who invited you, and approves you on WhatsApp or in the app; until then you can browse titles
@@ -19,12 +20,16 @@ happens. **WhatsApp** is used only to join, manage your account, and get notific
    (optional, needs an Anthropic key).
 3. **Find and request:** search, tap **Request**, add a note if you like.
 4. **Get notified on WhatsApp:** the owner gets "Bilal (Sunrise Apartments, Saket) would like to
-   borrow Dune" with an **Open request** button. They accept or decline in the app.
+   borrow Dune", with Bilal's borrowing record ("Returned 4 of 4 on time · invited by Ayesha") and an
+   **Open request** button. They accept or decline in the app; accepting asks them to confirm they
+   lend at their own risk. Nobody can hold more than 2 borrowed books at once (`MAX_BORROWED`).
 5. **Arrange the hand-over** in the app's private chat. Each new message is notified on WhatsApp
    with a **Reply** button. Either person can tap **Share my number** to share it with that one
    person.
 6. **Return:** the borrower gets a reminder before the due date, and the owner taps
-   **Got it back**.
+   **Got it back**. A late book means weekly reminders to the borrower, a note to the owner, and
+   after two weeks a note to the admins and to whoever invited the borrower. Nobody can delete their
+   account while holding someone's book.
 
 Also in the app: **Tell me when someone adds it** (wishlist), block, and account deletion.
 
@@ -120,6 +125,7 @@ See `.env.example` for all of them. The main ones:
 | `JOIN_CODE` | Code new people send (`join <code>`) to get in. Empty = open. Changing it doesn't affect existing members |
 | `ADMIN_PHONES` | Numbers allowed to use `stats`, `members`, `remove member <id>` |
 | `LOAN_DAYS` | Loan length before reminders (default 21) |
+| `MAX_BORROWED` | Most books one member can have borrowed at the same time (default 2) |
 | `MONTHLY_TEMPLATE_LIMIT` | Cap on paid WhatsApp messages per month (default 200) |
 | `WHATSAPP_TEMPLATES` | `off` until Meta approves the templates |
 | `ANTHROPIC_API_KEY` | Turns on shelf-photo recognition |

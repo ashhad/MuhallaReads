@@ -24,7 +24,8 @@ CREATE TABLE IF NOT EXISTS members (
   book_alerts     INTEGER NOT NULL DEFAULT 1,
   books_seen_id   INTEGER,                         -- told about / saw books up to this book id
   book_alert_at   TEXT,                            -- last new-book message, to keep them rare
-  nudged_at       TEXT                             -- last paid template, for "one per absence"
+  nudged_at       TEXT,                            -- last paid template, for "one per absence"
+  terms_at        TEXT                             -- when they agreed to the Terms (terms.html)
 );
 
 CREATE TABLE IF NOT EXISTS sessions (
@@ -67,7 +68,10 @@ CREATE TABLE IF NOT EXISTS requests (
   closed_at       TEXT,
   reminders       INTEGER NOT NULL DEFAULT 0,
   borrower_shared INTEGER NOT NULL DEFAULT 0,
-  owner_shared    INTEGER NOT NULL DEFAULT 0
+  owner_shared    INTEGER NOT NULL DEFAULT 0,
+  owner_risk_at   TEXT,     -- the owner confirmed they lend at their own risk
+  owner_late_at   TEXT,     -- the owner was told the book is overdue
+  escalated_at    TEXT      -- admins (and whoever invited the borrower) were told it's 2 weeks overdue
 );
 CREATE INDEX IF NOT EXISTS requests_borrower ON requests(borrower_id);
 CREATE INDEX IF NOT EXISTS requests_owner ON requests(owner_id);
@@ -162,6 +166,7 @@ function migrate(db) {
     books_seen_id: 'INTEGER',
     book_alert_at: 'TEXT',
     nudged_at: 'TEXT',
+    terms_at: 'TEXT',
   };
   const cols = new Set(db.prepare('PRAGMA table_info(members)').all().map((c) => c.name));
   for (const [col, type] of Object.entries(added)) {
@@ -172,6 +177,10 @@ function migrate(db) {
   const fix = db.prepare('UPDATE books SET title = ?, author = ? WHERE id = ?');
   for (const b of db.prepare("SELECT id, title, author FROM books WHERE title GLOB '*[*_~`]*' OR author GLOB '*[*_~`]*' OR title LIKE '%' || char(10) || '%' OR author LIKE '%' || char(10) || '%'").all()) {
     fix.run(plainLine(b.title, 300) || 'Untitled', plainLine(b.author, 200), b.id);
+  }
+  const requestCols = new Set(db.prepare('PRAGMA table_info(requests)').all().map((c) => c.name));
+  for (const col of ['owner_risk_at', 'owner_late_at', 'escalated_at']) {
+    if (!requestCols.has(col)) db.exec(`ALTER TABLE requests ADD COLUMN ${col} TEXT`);
   }
   const sessionCols = new Set(db.prepare('PRAGMA table_info(sessions)').all().map((c) => c.name));
   if (!sessionCols.has('last_used_at')) db.exec('ALTER TABLE sessions ADD COLUMN last_used_at TEXT');
@@ -338,6 +347,10 @@ export class Store {
 
   deleteMember(id) {
     this.q('DELETE FROM members WHERE id = ?').run(id);
+  }
+
+  acceptTerms(id, at = now()) {
+    this.q('UPDATE members SET terms_at = ? WHERE id = ?').run(at, id);
   }
 
   markNudged(id, at = now()) {
@@ -538,6 +551,27 @@ export class Store {
     return this.q(`SELECT COUNT(*) AS n FROM requests WHERE borrower_id = ? AND status = 'pending'`).get(borrowerId).n;
   }
 
+  countBorrowed(borrowerId) {
+    return this.q(`SELECT COUNT(*) AS n FROM requests WHERE borrower_id = ? AND status = 'accepted'`).get(borrowerId).n;
+  }
+
+  /** Books this member has borrowed and not yet returned. */
+  borrowedBy(borrowerId) {
+    return this.q(`${REQUEST_SELECT} WHERE r.borrower_id = ? AND r.status = 'accepted' ORDER BY r.due_at`).all(borrowerId);
+  }
+
+  /** How a member has done as a borrower: returned (and on time), borrowing now (and overdue). */
+  borrowerRecord(borrowerId, at = now()) {
+    const r = this.q(
+      `SELECT COALESCE(SUM(status = 'returned'), 0) AS returned,
+              COALESCE(SUM(status = 'returned' AND closed_at <= due_at), 0) AS onTime,
+              COALESCE(SUM(status = 'accepted'), 0) AS borrowing,
+              COALESCE(SUM(status = 'accepted' AND due_at < ?), 0) AS overdue
+       FROM requests WHERE borrower_id = ?`,
+    ).get(at, borrowerId);
+    return { returned: r.returned, onTime: r.onTime, borrowing: r.borrowing, overdue: r.overdue };
+  }
+
   updateRequest(id, fields) {
     const keys = Object.keys(fields);
     this.q(`UPDATE requests SET ${keys.map((k) => `${k} = ?`).join(', ')} WHERE id = ?`).run(
@@ -547,15 +581,9 @@ export class Store {
     return this.requestById(id);
   }
 
-  /** Accepted loans that need a reminder: due within `soonMs`, or overdue by `lateMs` (second reminder). */
-  loansNeedingReminder(at, soonMs, lateMs) {
-    const soon = new Date(at.getTime() + soonMs).toISOString();
-    const late = new Date(at.getTime() - lateMs).toISOString();
-    return this.q(
-      `${REQUEST_SELECT}
-       WHERE r.status = 'accepted' AND r.due_at IS NOT NULL
-         AND ((r.reminders = 0 AND r.due_at <= ?) OR (r.reminders = 1 AND r.due_at <= ?))`,
-    ).all(soon, late);
+  /** Every book currently lent out with a due date (for reminders). */
+  activeLoans() {
+    return this.q(`${REQUEST_SELECT} WHERE r.status = 'accepted' AND r.due_at IS NOT NULL`).all();
   }
 
   // ---------- relayed messages ----------

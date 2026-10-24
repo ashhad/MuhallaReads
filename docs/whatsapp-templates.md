@@ -47,8 +47,8 @@ Samples: `{{1}}` = `Bilal (Sunrise Apartments, Saket)`, `{{2}}` = `Dune`, `{{3}}
 
 ### 2. `request_update`
 
-Sent when there's news about a request: accepted, declined, a new chat message, or a shared
-number.
+Sent when there's news about a request: accepted, declined, a new chat message, a shared
+number, or (to the owner) a book that hasn't come back by its due date.
 
 **Body**
 

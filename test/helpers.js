@@ -16,6 +16,7 @@ export const baseSettings = {
   timeZone: 'Asia/Kolkata',
   loanDays: 21,
   maxPendingRequests: 5,
+  maxBorrowed: 2,
   monthlyTemplateLimit: 200,
   templatesEnabled: true,
   photoDailyLimit: 10,
@@ -79,6 +80,7 @@ export function makeWorld({ settings = {} } = {}) {
   /** Joins as a new member, answers the two setup questions, and is approved (as an admin would). */
   async function join(phone, name, building = 'Green Park Tower', locality = 'Saket') {
     await say(phone, s.joinCode ? `join ${s.joinCode}` : 'hi', { profileName: name });
+    await say(phone, '', { payload: 'agree' });
     await say(phone, building);
     const reply = await say(phone, locality);
     const m = store.memberByPhone(phone);

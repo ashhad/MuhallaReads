@@ -34,13 +34,30 @@ test('join code is required when configured', async () => {
   const w = makeWorld({ settings: { joinCode: 'books42' } });
   assert.match(await w.say(AYESHA, 'hello'), /join <code>/);
   assert.equal(w.member(AYESHA), undefined);
-  assert.match(await w.say(AYESHA, 'join BOOKS42', { profileName: 'Ayesha' }), /Welcome, Ayesha[\s\S]*building or society/);
+  assert.match(await w.say(AYESHA, 'join BOOKS42', { profileName: 'Ayesha' }), /Welcome, Ayesha[\s\S]*Before you join/);
+  assert.match(await w.say(AYESHA, 'I agree'), /building or society/);
   assert.ok(w.member(AYESHA));
+});
+
+test('newcomers agree to the terms first; saying no keeps nothing', async () => {
+  const w = makeWorld();
+  const welcome = await w.say(AYESHA, 'hi', { profileName: 'Ayesha' });
+  assert.match(welcome, /at their own risk[\s\S]*not returned[\s\S]*https:\/\/books\.example\.org\/terms\.html[\s\S]*I agree=agree/);
+  assert.match(await w.say(AYESHA, 'Green Park Tower'), /Before you join/); // not agreed yet
+  assert.match(await w.say(AYESHA, 'login'), /Before you join/);
+  assert.equal(w.member(AYESHA).terms_at, null);
+  assert.match(await w.say(AYESHA, '', { payload: 'agree' }), /Thanks![\s\S]*building or society[\s\S]*Skip=skip/);
+  assert.ok(w.member(AYESHA).terms_at);
+
+  await w.say(BILAL, 'hi', { profileName: 'Bilal' });
+  assert.match(await w.say(BILAL, 'no'), /nothing about you was kept/);
+  assert.equal(w.member(BILAL), undefined);
 });
 
 test('setup asks for building then locality, then hands over to the app', async () => {
   const w = makeWorld();
-  assert.match(await w.say(AYESHA, 'hi', { profileName: 'Ayesha' }), /Welcome, Ayesha[\s\S]*building or society[\s\S]*Skip=skip/);
+  assert.match(await w.say(AYESHA, 'hi', { profileName: 'Ayesha' }), /Welcome, Ayesha/);
+  assert.match(await w.say(AYESHA, 'I agree'), /building or society[\s\S]*Skip=skip/);
   assert.match(await w.say(AYESHA, '', { payload: 'skip' }), /locality or area/);
   assert.match(await w.say(AYESHA, 'skip'), /at least your locality/);
   assert.match(await w.say(AYESHA, '', { payload: 'accept:3' }), /finish setting you up/); // old button isn't a locality
@@ -51,6 +68,7 @@ test('setup asks for building then locality, then hands over to the app', async 
   assert.equal(w.member(AYESHA).locality, 'Saket');
 
   await w.say(BILAL, 'hi', { profileName: 'Bilal' });
+  await w.say(BILAL, 'I agree');
   await w.say(BILAL, 'Sunrise Apartments');
   assert.match(await w.say(BILAL, 'skip'), /Bilal \(Sunrise Apartments\)/);
 });
@@ -58,7 +76,8 @@ test('setup asks for building then locality, then hands over to the app', async 
 test('members without a location are asked for it before anything else', async () => {
   const w = makeWorld();
   w.store.createMember({ name: 'Old Member', phone: AYESHA }); // e.g. created on the website by an admin
-  assert.match(await w.say(AYESHA, 'dune'), /building or society/);
+  assert.match(await w.say(AYESHA, 'dune'), /Before you join/);
+  assert.match(await w.say(AYESHA, 'I agree'), /building or society/);
 });
 
 test('name, building and locality can be changed, keeping a location', async () => {
@@ -131,7 +150,7 @@ test('a request notifies the owner with a button to the app, never a phone numbe
 
   // Accepting (in the app) tells Bilal, who messaged recently, for free.
   w.transport.clear();
-  await w.library.decide(w.member(AYESHA), r.id, true);
+  await w.library.decide(w.member(AYESHA), r.id, true, { understood: true });
   const [accepted] = w.transport.to(BILAL);
   assert.equal(accepted.kind, 'text');
   assert.match(accepted.text, /Ayesha\* agreed to lend you \*Dune\*/);
@@ -196,7 +215,7 @@ test('wishlist: told when someone adds the book, with a link to it', async () =>
 test('due-soon and overdue reminders, once each', async () => {
   const { w, dune } = await withDune();
   const r = await w.library.want(w.member(BILAL), dune.id);
-  await w.library.decide(w.member(AYESHA), r.id, true);
+  await w.library.decide(w.member(AYESHA), r.id, true, { understood: true });
   w.transport.clear();
 
   w.time.now += 20 * 86400_000; // due in 1 day
@@ -230,7 +249,7 @@ test('limits open requests per person', async () => {
 test('marking a lent book available closes its loan', async () => {
   const { w, dune } = await withDune();
   const r = await w.library.want(w.member(BILAL), dune.id);
-  await w.library.decide(w.member(AYESHA), r.id, true);
+  await w.library.decide(w.member(AYESHA), r.id, true, { understood: true });
   await w.library.setAvailability(w.member(AYESHA), dune.id, 'available');
   assert.equal(w.store.requestById(r.id).status, 'returned');
 });
@@ -255,6 +274,7 @@ test('an invite link brings a newcomer in as "waiting"; the admin is asked, with
 
   w.transport.clear();
   assert.match(await w.say(RIYA, `join ${code}`, { profileName: 'Riya' }), /Welcome, Riya/);
+  await w.say(RIYA, 'I agree');
   await w.say(RIYA, 'skip');
   const done = await w.say(RIYA, 'Bani Park, Jaipur');
   assert.match(done, /once an admin approves you/);
@@ -287,6 +307,7 @@ test('the join code works too, also with approval; a wrong code is turned away',
   assert.equal(w.member(RIYA), undefined);
 
   await w.say(RIYA, 'join 159357', { profileName: 'Riya' });
+  await w.say(RIYA, 'I agree');
   await w.say(RIYA, 'skip');
   w.transport.clear();
   await w.say(RIYA, 'Bani Park');
@@ -303,6 +324,7 @@ test('the join code works too, also with approval; a wrong code is turned away',
 test('admins are let in straight away, and so is everyone if no admin has joined yet', async () => {
   const w = makeWorld({ settings: { adminPhones: [] } });
   await w.say(RIYA, 'hi', { profileName: 'Riya' });
+  await w.say(RIYA, 'I agree');
   await w.say(RIYA, 'skip');
   assert.match(await w.say(RIYA, 'Bani Park'), /All set!/);
   assert.equal(w.member(RIYA).status, 'active');
@@ -338,6 +360,7 @@ test('new books are announced once, batched per person, and members can opt out'
 test('a single new book is announced by name; waiting members get no alerts', async () => {
   const w = await twoMembers();
   await w.say(RIYA, 'hi', { profileName: 'Riya' });
+  await w.say(RIYA, 'I agree');
   await w.say(RIYA, 'skip');
   await w.say(RIYA, 'Bani Park'); // waiting for approval
   w.transport.clear();

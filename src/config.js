@@ -42,6 +42,8 @@ export const config = {
   // Lending rules
   loanDays: num('LOAN_DAYS', 21),
   maxPendingRequests: num('MAX_PENDING_REQUESTS', 5),
+  // Most books one member may have borrowed at the same time.
+  maxBorrowed: num('MAX_BORROWED', 2),
 
   // WhatsApp cost control: paid "template" notifications per month (≈ ₹0.14 each in India).
   monthlyTemplateLimit: num('MONTHLY_TEMPLATE_LIMIT', 200),

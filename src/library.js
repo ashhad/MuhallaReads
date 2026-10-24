@@ -18,6 +18,17 @@ const quoted = (text) =>
     .join('\n');
 
 const CHAT_MAX = 1000;
+const DAY = 86400_000;
+// Overdue books: the borrower is reminded weekly; at this point admins (and whoever invited the
+// borrower) are told too.
+const ESCALATE_AFTER_DAYS = 14;
+
+/** "*Dune* from Ayesha and *Ikigai* from Bilal" */
+export function listLoans(loans) {
+  const named = loans.slice(0, 3).map((r) => `*${r.book_title}* from ${r.owner_name}`);
+  if (loans.length > 3) named.push(`${loans.length - 3} more`);
+  return named.length === 1 ? named[0] : `${named.slice(0, -1).join(', ')} and ${named.at(-1)}`;
+}
 
 /**
  * A short tag that, with the member number, names one specific person waiting to join. Member numbers
@@ -44,6 +55,28 @@ export function createLibrary({ store, notifier, settings, clock = () => new Dat
     return r;
   }
 
+  /** Most books one member may have borrowed at a time. */
+  const maxBorrowed = () => settings.maxBorrowed ?? 2;
+
+  /**
+   * What a lender sees about someone asking to borrow: "Returned 4 of 4 on time · has 1 book now ·
+   * invited by Ayesha". Facts only, so it stays friendly.
+   */
+  function borrowerRecord(memberId) {
+    const r = store.borrowerRecord(memberId, clock().toISOString());
+    const m = store.memberById(memberId);
+    const inviter = m?.referred_by ? store.memberById(m.referred_by) : null;
+    const parts = [];
+    if (!r.returned && !r.borrowing) parts.push('first time borrowing');
+    if (r.returned) parts.push(`returned ${r.onTime} of ${r.returned} on time`);
+    if (r.borrowing) {
+      parts.push(`has ${r.borrowing} book${r.borrowing > 1 ? 's' : ''} now${r.overdue ? ` (${r.overdue} overdue)` : ''}`);
+    }
+    if (inviter) parts.push(`invited by ${inviter.name}`);
+    const text = parts.join(' · ');
+    return text.charAt(0).toUpperCase() + text.slice(1);
+  }
+
   const otherParty = (r, member) =>
     r.owner_id === member.id
       ? { id: r.borrower_id, name: r.borrower_name }
@@ -63,6 +96,11 @@ export function createLibrary({ store, notifier, settings, clock = () => new Dat
         `You have ${settings.maxPendingRequests} requests waiting for an answer. Cancel one before asking for more.`,
       );
     }
+    if (store.countBorrowed(borrower.id) >= maxBorrowed()) {
+      throw new LibraryError(
+        `You're already borrowing ${maxBorrowed()} books, the most anyone can have at once. Return one, then ask for this.`,
+      );
+    }
     note = plainLine(note, 200); // one plain line, shown in quotes
     const id = store.createRequest({ bookId: book.id, borrowerId: borrower.id, ownerId: book.owner_id, note });
 
@@ -71,6 +109,7 @@ export function createLibrary({ store, notifier, settings, clock = () => new Dat
       text:
         `📚 *${who(borrower)}* would like to borrow *${book.title}*.` +
         (note ? `\n💬 "${note}"` : '') +
+        `\n📋 ${borrowerRecord(borrower.id)}` +
         '\n\nOpen the app to accept or decline.',
       link: requestLink(id),
       template: { name: 'book_request', params: [who(borrower), book.title, note || '-'], url: String(id) },
@@ -78,7 +117,11 @@ export function createLibrary({ store, notifier, settings, clock = () => new Dat
     return store.requestById(id);
   }
 
-  async function decide(owner, requestId, accept) {
+  /**
+   * Accepts or declines a request. Accepting needs `understood`: the owner confirmed they lend at their
+   * own risk (the app asks every time; see terms.html).
+   */
+  async function decide(owner, requestId, accept, { understood = false } = {}) {
     const r = getRequest(requestId, owner);
     if (r.owner_id !== owner.id) throw new LibraryError(`Only ${r.owner_name} can answer request #${r.id}.`);
     if (r.status !== 'pending') throw new LibraryError(`Request #${r.id} is already ${r.status}.`);
@@ -98,8 +141,16 @@ export function createLibrary({ store, notifier, settings, clock = () => new Dat
     if (book.status === 'lent') {
       throw new LibraryError(`*${r.book_title}* is marked as lent. Mark it returned first, or decline this request.`);
     }
-    const due = new Date(clock().getTime() + settings.loanDays * 86400_000).toISOString();
-    store.updateRequest(r.id, { status: 'accepted', decided_at: clock().toISOString(), due_at: due });
+    if (store.countBorrowed(r.borrower_id) >= maxBorrowed()) {
+      throw new LibraryError(
+        `${r.borrower_name} already has ${maxBorrowed()} borrowed books, the most anyone can have at once. ` +
+          'You can accept once they’ve returned one.',
+      );
+    }
+    if (!understood) throw new LibraryError('Please confirm that you’re lending at your own risk.');
+    const due = new Date(clock().getTime() + settings.loanDays * DAY).toISOString();
+    const at = clock().toISOString();
+    store.updateRequest(r.id, { status: 'accepted', decided_at: at, due_at: due, owner_risk_at: at });
     store.setBookStatus(r.book_id, 'lent');
 
     await notifier.notify(r.borrower_id, {
@@ -403,25 +454,88 @@ export function createLibrary({ store, notifier, settings, clock = () => new Dat
     return store.addWish(member.id, query);
   }
 
-  /** Sends due-soon and overdue reminders. Run periodically. */
+  /**
+   * Due-soon and overdue reminders. Run periodically (hourly). The borrower is reminded 2 days before
+   * the due date, 3 days after it, then weekly while it's still out. The owner is told once when it's
+   * overdue; after two weeks the admins and whoever invited the borrower are told too.
+   */
   async function runReminders(at = clock()) {
-    const loans = store.loansNeedingReminder(at, 2 * 86400_000, 3 * 86400_000);
-    for (const r of loans) {
-      const overdue = new Date(r.due_at) < at;
-      store.updateRequest(r.id, { reminders: r.reminders + 1 });
-      await notifier.notify(r.borrower_id, {
-        requestId: r.id,
-        text: overdue
-          ? `⏰ *${r.book_title}* from ${r.owner_name} was due back on ${fmtDate(r.due_at)}. Please return it soon, or message them in the app.`
-          : `⏰ Reminder: *${r.book_title}* from ${r.owner_name} is due back on ${fmtDate(r.due_at)}.`,
-        link: requestLink(r.id),
-        template: { name: 'return_reminder', params: [r.book_title, r.owner_name, fmtDate(r.due_at)], url: String(r.id) },
+    let sent = 0;
+    for (const r of store.activeLoans()) {
+      const due = Date.parse(r.due_at);
+      const overdue = at.getTime() > due;
+      const next = due + (r.reminders === 0 ? -2 : 3 + (r.reminders - 1) * 7) * DAY;
+      if (at.getTime() >= next) {
+        store.updateRequest(r.id, { reminders: r.reminders + 1 });
+        await notifier.notify(r.borrower_id, {
+          requestId: r.id,
+          text: overdue
+            ? `⏰ *${r.book_title}* from ${r.owner_name} was due back on ${fmtDate(r.due_at)}. Please return it soon, or message them in the app.`
+            : `⏰ Reminder: *${r.book_title}* from ${r.owner_name} is due back on ${fmtDate(r.due_at)}.`,
+          link: requestLink(r.id),
+          template: { name: 'return_reminder', params: [r.book_title, r.owner_name, fmtDate(r.due_at)], url: String(r.id) },
+        });
+        sent++;
+        if (overdue && !r.owner_late_at) {
+          store.updateRequest(r.id, { owner_late_at: at.toISOString() });
+          await notifier.notify(r.owner_id, {
+            requestId: r.id,
+            text:
+              `⏰ ${r.borrower_name} hasn't returned *${r.book_title}* yet (it was due ${fmtDate(r.due_at)}). ` +
+              'We’ve reminded them and will keep doing so each week. You can message them in the app; ' +
+              'once you have it back, tap *Got it back*.',
+            link: requestLink(r.id),
+            template: { name: 'request_update', params: [r.book_title, `${r.borrower_name} hasn't returned it yet`], url: String(r.id) },
+          });
+        }
+      }
+      if (!r.escalated_at && at.getTime() - due >= ESCALATE_AFTER_DAYS * DAY) {
+        store.updateRequest(r.id, { escalated_at: at.toISOString() });
+        await escalate(r);
+      }
+    }
+    return sent;
+  }
+
+  /** A book two weeks overdue: tells the admins, and the person who invited the borrower. */
+  async function escalate(r) {
+    const borrower = store.memberById(r.borrower_id);
+    const owner = store.memberById(r.owner_id);
+    if (!borrower || !owner) return;
+    const inviter = borrower.referred_by ? store.memberById(borrower.referred_by) : null;
+    const told = new Set([borrower.id, owner.id]);
+    for (const admin of admins()) {
+      if (told.has(admin.id)) continue;
+      told.add(admin.id);
+      await notifier.notify(admin.id, {
+        text:
+          `📕 *${r.book_title}*, lent by ${who(owner)}, is ${ESCALATE_AFTER_DAYS} days overdue with ${who(borrower)}` +
+          `${inviter ? `, who was invited by ${inviter.name}` : ''}. They've been reminded every week. ` +
+          'You may want to have a word.',
       });
     }
-    return loans.length;
+    if (inviter && inviter.status === 'active' && !told.has(inviter.id)) {
+      await notifier.notify(inviter.id, {
+        text:
+          `📕 ${borrower.name}, whom you invited, has had ${owner.name}'s book *${r.book_title}* for ` +
+          `${ESCALATE_AFTER_DAYS} days past its return date. A friendly reminder from you might help.`,
+      });
+    }
+  }
+
+  /** Refuses while they still hold someone's book, so nobody can borrow and then vanish. */
+  function canDeleteAccount(member) {
+    const holding = store.borrowedBy(member.id);
+    if (holding.length) {
+      throw new LibraryError(
+        `You still have ${listLoans(holding)}. Please return ${holding.length > 1 ? 'them' : 'it'} first. ` +
+          'Once the owner taps *Got it back*, you can delete your account.',
+      );
+    }
   }
 
   function deleteAccount(member) {
+    canDeleteAccount(member);
     store.deleteMember(member.id);
   }
 
@@ -430,6 +544,8 @@ export function createLibrary({ store, notifier, settings, clock = () => new Dat
     decide,
     cancel,
     markReturned,
+    borrowerRecord,
+    canDeleteAccount,
     setAvailability,
     sendMessage,
     shareNumber,

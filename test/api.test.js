@@ -42,6 +42,7 @@ const call = async (path, { token, method = 'GET', body } = {}) => {
 async function signIn(phone, name, place = { building: 'Green Park Tower', locality: 'Saket' }) {
   const m = store.memberByPhone(phone) || store.createMember({ name, phone });
   if (place) store.setPlace(m.id, place);
+  store.acceptTerms(m.id);
   const { data } = await call('/api/login', { method: 'POST', body: { code: store.createLoginCode(m.id) } });
   return data.token;
 }
@@ -74,9 +75,16 @@ test('borrowing over the API never leaks phone numbers until shared', async () =
   const id = req.data.request.id;
   assert.equal(transport.to(AYESHA).at(-1).name, 'book_request'); // Ayesha never messaged the bot
 
-  assert.equal((await call(`/api/requests/${id}/accept`, { method: 'POST', token: b })).status, 400); // not the owner
-  const acc = await call(`/api/requests/${id}/accept`, { method: 'POST', token: a });
+  const asked = (await call('/api/requests', { token: a })).data.requests.find((r) => r.id === id);
+  assert.equal(asked.record, 'First time borrowing'); // what Ayesha sees before deciding
+  const understood = { understood: true };
+  assert.equal((await call(`/api/requests/${id}/accept`, { method: 'POST', token: b, body: understood })).status, 400); // not the owner
+  const unconfirmed = await call(`/api/requests/${id}/accept`, { method: 'POST', token: a });
+  assert.equal(unconfirmed.status, 400); // lending at your own risk must be confirmed
+  assert.match(unconfirmed.data.error, /own risk/);
+  const acc = await call(`/api/requests/${id}/accept`, { method: 'POST', token: a, body: understood });
   assert.equal(acc.data.request.status, 'accepted');
+  assert.equal(store.requestById(id).owner_risk_at !== null, true);
 
   await call(`/api/requests/${id}/messages`, { method: 'POST', token: b, body: { body: 'Hi! Block D here.' } });
   const thread = await call(`/api/requests/${id}/messages`, { token: a });
@@ -153,6 +161,7 @@ test('photo results that were hard to read, or not found anywhere, come back unt
   const srv = await new Promise((r) => { const x = app.listen(0, () => r(x)); });
   const m = s.createMember({ name: 'Esha', phone: '919811111199' });
   s.setPlace(m.id, { building: 'B', locality: 'Saket' });
+  s.acceptTerms(m.id);
   const token = s.createSession(m.id);
   const res = await fetch(`http://127.0.0.1:${srv.address().port}/api/scan-photo`, {
     method: 'POST',

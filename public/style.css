@@ -211,6 +211,7 @@ input[type=checkbox] { width: 1.2rem; height: 1.2rem; padding: 0; flex: none; ac
 /* requests */
 #view-requests h3:first-child { margin-top: .4rem; }
 .note { font-size: .9rem; font-style: italic; margin-top: .3rem; }
+.record { font-size: .85rem; color: var(--muted); margin-top: .3rem; }
 .btn.danger { color: var(--danger); }
 .want { margin-left: auto; }
 
@@ -234,12 +235,14 @@ dialog {
   background: var(--card); color: var(--text); padding: 1.2rem;
 }
 dialog::backdrop { background: rgb(13 27 38 / .55); }
-#sheet-form { display: grid; gap: .7rem; }
-#sheet-form h3, #profile-form h3 {
+#sheet-form, #terms-form { display: grid; gap: .7rem; }
+#sheet-form h3, #profile-form h3, #terms-form h3 {
   margin: 0; font-family: var(--serif); font-weight: 400; font-size: 1.4rem;
   text-transform: none; letter-spacing: -0.01em; color: var(--text);
 }
+#sheet-text { white-space: pre-line; }
 #sheet-text:empty { display: none; }
+#terms-form p { margin: 0; }
 .row.end { flex-direction: row-reverse; justify-content: flex-start; }
 
 /* profile dialog */

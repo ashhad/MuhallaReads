@@ -75,8 +75,10 @@ test('Cloud API webhook end to end: signature, setup, sign-in button and a paid 
     assert.equal(welcome[0].url, 'https://graph.facebook.com/v23.0/555/messages');
     assert.equal(welcome[0].auth, 'Bearer tok');
     assert.match(welcome[0].body.text.body, /Welcome, Ayesha/);
-    assert.equal(welcome[1].body.type, 'interactive'); // building question with a Skip button
-    assert.equal(welcome[1].body.interactive.action.buttons[0].reply.id, 'skip');
+    assert.equal(welcome[1].body.type, 'interactive'); // the terms, with an "I agree" button
+    assert.equal(welcome[1].body.interactive.action.buttons[0].reply.id, 'agree');
+    const [building] = await chat(AYESHA, 'Ayesha', 'I agree', 1);
+    assert.equal(building.body.interactive.action.buttons[0].reply.id, 'skip'); // building question with Skip
     await chat(AYESHA, 'Ayesha', 'Green Park Tower', 1);
     const [done] = await chat(AYESHA, 'Ayesha', 'Saket', 1);
     assert.equal(done.body.interactive.type, 'cta_url'); // "Open MohallaReads" button with a sign-in link
@@ -90,6 +92,7 @@ test('Cloud API webhook end to end: signature, setup, sign-in button and a paid 
     const { added } = await app.locals.library.addBooks(ayesha, [{ title: 'Dune' }]);
     store.touchInbound(ayesha.id, new Date(Date.now() - 2 * 86400_000).toISOString());
     await chat(BILAL, 'Bilal', 'hi', 2);
+    await chat(BILAL, 'Bilal', 'I agree', 1);
     await chat(BILAL, 'Bilal', 'skip', 1);
     await chat(BILAL, 'Bilal', 'Saket', 1);
     const before = sent.length;

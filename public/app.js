@@ -52,7 +52,12 @@ async function api(path, opts = {}) {
     signedOut();
     throw new Error('Please sign in again.');
   }
-  if (!res.ok) throw new Error(data.error || 'Something went wrong.');
+  if (!res.ok) {
+    const err = new Error(data.error || 'Something went wrong.');
+    err.code = data.code;
+    if (data.code === 'terms') askTerms();
+    throw err;
+  }
   return data;
 }
 
@@ -95,6 +100,30 @@ function sheet({ title, text = '', input = null, ok = 'OK' }) {
     d.returnValue = '';
     d.showModal();
     if (input !== null) inp.focus();
+  });
+}
+
+/**
+ * Asks a member to agree to the Terms before they borrow, lend or add books. New members agree on
+ * WhatsApp when they join; this is for everyone who joined before the Terms existed.
+ */
+function askTerms() {
+  const d = $('#terms');
+  if (d.open) return Promise.resolve(false);
+  return new Promise((resolve) => {
+    d.onclose = async () => {
+      if (d.returnValue !== 'agree') return resolve(false);
+      try {
+        state.me = (await api('/api/terms', { method: 'POST', body: { agree: true } })).member;
+        toast('Thanks! You can borrow and lend now.');
+        resolve(true);
+      } catch (ex) {
+        toast(ex.message);
+        resolve(false);
+      }
+    };
+    d.returnValue = '';
+    d.showModal();
   });
 }
 
@@ -208,6 +237,7 @@ function showApp() {
     editProfile({ required: true });
     return;
   }
+  if (!state.me.termsAccepted) askTerms();
   openPendingLink();
 }
 
@@ -323,11 +353,17 @@ $('#logout').addEventListener('click', async () => {
 $('#delete-account').addEventListener('click', async () => {
   const ok = await sheet({
     title: 'Delete your account?',
-    text: 'This removes your account, your books, and all your requests and messages. It cannot be undone.',
+    text:
+      'This removes your account, your books, and all your requests and messages. It cannot be undone. ' +
+      'If you’re borrowing a book, return it first.',
     ok: 'Delete everything',
   });
   if (ok === null) return;
-  await api('/api/me', { method: 'DELETE' }).catch((ex) => toast(ex.message));
+  try {
+    await api('/api/me', { method: 'DELETE' });
+  } catch (ex) {
+    return toast(ex.message); // e.g. still holding a borrowed book
+  }
   forgetTray();
   signedOut();
 });
@@ -418,7 +454,10 @@ function ownersHtml(g) {
 async function requestBook(btn) {
   const note = await sheet({
     title: `Borrow “${btn.dataset.title}”?`,
-    text: `${btn.dataset.owner} will get your request on WhatsApp. Your number is not shared.`,
+    text:
+      `${btn.dataset.owner} will get your request on WhatsApp. Your number is not shared.\n\n` +
+      `If they agree, please return it within ${state.config.loanDays || 21} days, in the same condition. ` +
+      `You can borrow up to ${state.config.maxBorrowed || 2} books at a time.`,
     input: { placeholder: 'Add a note (optional), e.g. “Could I pick it up Sunday?”' },
     ok: 'Send request',
   });
@@ -543,6 +582,7 @@ function requestCard(r) {
       ${titleLink(r.book)}
       <div class="author">${who} · <span class="tag ${r.status === 'accepted' ? 'lent' : ''}">${STATUS_TEXT[r.status]}</span>${due}</div>
       ${r.note && r.status === 'pending' ? `<div class="note">“${esc(r.note)}”</div>` : ''}
+      ${r.record && r.status === 'pending' ? `<div class="record">📋 ${esc(r.record)}</div>` : ''}
       ${buttons.length ? `<div class="actions">${buttons.join('')}</div>` : ''}
     </div></li>`;
 }
@@ -566,9 +606,25 @@ async function showRequestList() {
 
   $$('#requests-list [data-act]').forEach((btn) =>
     btn.addEventListener('click', async () => {
+      let body;
+      if (btn.dataset.act === 'accept') {
+        // Lending is at the owner's own risk; they confirm it every time.
+        const r = state.requests.find((x) => x.id === Number(btn.dataset.id));
+        const ok = await sheet({
+          title: `Lend “${r.book.title}” to ${r.other.name}?`,
+          text:
+            (r.record ? `📋 ${r.record}\n\n` : '') +
+            'You’re lending at your own risk. MohallaReads only helps neighbours find each other: it doesn’t ' +
+            `hold books, check people or guarantee returns. If the book is late, lost or damaged, that’s between you and ${r.other.name}. ` +
+            `They’ll be asked to return it within ${state.config.loanDays || 21} days.`,
+          ok: 'I understand, lend it',
+        });
+        if (ok === null) return;
+        body = { understood: true };
+      }
       btn.disabled = true;
       try {
-        await api(`/api/requests/${btn.dataset.id}/${btn.dataset.act}`, { method: 'POST' });
+        await api(`/api/requests/${btn.dataset.id}/${btn.dataset.act}`, { method: 'POST', body });
         if (btn.dataset.act === 'accept') toast('Accepted! Use Chat to arrange the hand-over.');
       } catch (ex) {
         toast(ex.message);

@@ -17,9 +17,10 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 const root = path.join(here, '..');
 
 class HttpError extends Error {
-  constructor(status, message) {
+  constructor(status, message, code) {
     super(message);
     this.status = status;
+    this.code = code; // lets the app react, e.g. 'terms' opens the Terms
   }
 }
 
@@ -69,6 +70,8 @@ export function createApp({ store, deps = {}, settings = config } = {}) {
       photoScan: canSeePhotos(),
       whatsappNumber: settings.whatsapp?.displayNumber || '',
       stats: store.stats(),
+      loanDays: settings.loanDays,
+      maxBorrowed: settings.maxBorrowed ?? 2,
     });
   });
 
@@ -115,6 +118,7 @@ export function createApp({ store, deps = {}, settings = config } = {}) {
     locality: m.locality,
     place: placeOf(m),
     status: m.status, // 'pending' until an admin approves them
+    termsAccepted: Boolean(m.terms_at),
     bookAlerts: Boolean(m.book_alerts),
     // Their personal invite code (the app builds the link), once they're in.
     invite: m.status === 'active' ? store.refCodeFor(m.id) : null,
@@ -126,6 +130,13 @@ export function createApp({ store, deps = {}, settings = config } = {}) {
   });
 
   api.get('/me', (req, res) => res.json({ member: publicMe(req.member) }));
+
+  // Members agree to the Terms (terms.html) when they join on WhatsApp; earlier members agree here.
+  api.post('/terms', (req, res) => {
+    if (req.body?.agree !== true) throw new HttpError(400, 'Tap “I agree” to accept the Terms.');
+    store.acceptTerms(req.member.id);
+    res.json({ member: publicMe(store.memberById(req.member.id)) });
+  });
 
   // Any of: name, building, locality. Building or locality must remain set.
   api.patch('/me', (req, res) => {
@@ -160,6 +171,11 @@ export function createApp({ store, deps = {}, settings = config } = {}) {
     if (req.member.status !== 'active') {
       throw new HttpError(403, "You can do this once an admin has approved you. You'll get a message on WhatsApp.");
     }
+    next();
+  };
+  // Lending, borrowing and adding books happen under the Terms, so members must have agreed to them.
+  const requireTerms = (req, _res, next) => {
+    if (!req.member.terms_at) throw new HttpError(403, 'Please agree to the Terms first.', 'terms');
     next();
   };
   const requireAdmin = (req, _res, next) => {
@@ -246,7 +262,7 @@ export function createApp({ store, deps = {}, settings = config } = {}) {
     res.json({ info });
   });
 
-  api.post('/books', requireApproved, requirePlace, async (req, res) => {
+  api.post('/books', requireApproved, requireTerms, requirePlace, async (req, res) => {
     const books = (Array.isArray(req.body?.books) ? req.body.books : [])
       .slice(0, 200)
       .map((b) => ({
@@ -261,7 +277,7 @@ export function createApp({ store, deps = {}, settings = config } = {}) {
     res.json({ added, skipped: skipped.length });
   });
 
-  api.post('/scan-photo', requireApproved, express.json({ limit: '8mb' }), async (req, res) => {
+  api.post('/scan-photo', requireApproved, requireTerms, express.json({ limit: '8mb' }), async (req, res) => {
     const img = parseDataUrl(req.body?.image);
     if (!img) throw new HttpError(400, 'No photo received.');
     let found;
@@ -316,6 +332,8 @@ export function createApp({ store, deps = {}, settings = config } = {}) {
       iShared: Boolean(iOwn ? r.owner_shared : r.borrower_shared),
       createdAt: r.created_at,
       dueAt: r.due_at,
+      // For deciding whether to lend: how the borrower has done so far.
+      ...(iOwn && ['pending', 'accepted'].includes(r.status) && { record: library.borrowerRecord(r.borrower_id) }),
     };
   };
 
@@ -327,13 +345,17 @@ export function createApp({ store, deps = {}, settings = config } = {}) {
     res.json({ requests: store.requestsFor(req.member.id).map((r) => viewRequest(r, req.member)) });
   });
 
-  api.post('/requests', requireApproved, requirePlace, async (req, res) => {
+  api.post('/requests', requireApproved, requireTerms, requirePlace, async (req, res) => {
     const r = await library.want(req.member, req.body?.bookId, req.body?.note);
     res.json({ request: viewRequest(r, req.member) });
   });
 
   const actions = {
-    accept: (m, id) => library.decide(m, id, true),
+    // The app asks the owner to confirm they lend at their own risk, every time.
+    accept: (m, id, body) => {
+      if (!m.terms_at) throw new HttpError(403, 'Please agree to the Terms first.', 'terms');
+      return library.decide(m, id, true, { understood: body?.understood === true });
+    },
     decline: (m, id) => library.decide(m, id, false),
     cancel: (m, id) => library.cancel(m, id),
     returned: (m, id) => library.markReturned(m, id),
@@ -343,7 +365,7 @@ export function createApp({ store, deps = {}, settings = config } = {}) {
   api.post('/requests/:id/:action', async (req, res, next) => {
     const fn = Object.hasOwn(actions, req.params.action) && actions[req.params.action];
     if (!fn) return next(); // e.g. /messages, handled below
-    const r = await fn(req.member, req.params.id);
+    const r = await fn(req.member, req.params.id, req.body);
     res.json({ request: viewRequest(r, req.member) });
   });
 
@@ -395,7 +417,7 @@ export function createApp({ store, deps = {}, settings = config } = {}) {
     const status = err.status || (err.type === 'entity.too.large' ? 413 : 500);
     if (status >= 500) console.error(err);
     const message = status >= 500 ? 'Something went wrong.' : err.message.replace(/\*/g, '');
-    res.status(status).json({ error: message });
+    res.status(status).json({ error: message, ...(err.code && status < 500 && { code: err.code }) });
   });
 
   return app;

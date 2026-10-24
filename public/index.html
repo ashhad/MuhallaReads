@@ -30,7 +30,8 @@
       <div class="privacy-note">
         <strong><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><rect x="4.5" y="10.5" width="15" height="10" rx="2"/><path d="M8 10.5V7a4 4 0 0 1 8 0v3.5"/></svg>Private by design</strong>
         Neighbours only see the name you choose. Your phone number is never shown to anyone unless you
-        decide to share it with one person. <a href="/privacy.html">Privacy policy</a>
+        decide to share it with one person. <a href="/privacy.html">Privacy policy</a><br>
+        By joining you agree to the <a href="/terms.html">Terms</a>: members lend and borrow at their own risk.
       </div>
     </div>
   </section>
@@ -147,7 +148,7 @@
         <button id="logout-all" class="btn small">Sign out on all devices</button>
         <button id="delete-account" class="btn small danger">Delete my account</button>
       </div>
-      <p class="small"><a href="/privacy.html" class="muted">Privacy policy</a></p>
+      <p class="small"><a href="/privacy.html" class="muted">Privacy policy</a> · <a href="/terms.html" class="muted">Terms</a></p>
     </main>
 
     <nav class="tabs">
@@ -185,6 +186,24 @@
       <div class="row end">
         <button class="btn primary" type="submit">Save</button>
         <button class="btn" type="button" id="profile-cancel">Cancel</button>
+      </div>
+    </form>
+  </dialog>
+
+  <!-- Terms: new members agree on WhatsApp when they join; earlier members agree here, once -->
+  <dialog id="terms" aria-labelledby="terms-title">
+    <form method="dialog" id="terms-form">
+      <h3 id="terms-title">Before you borrow or lend</h3>
+      <p class="muted small">
+        MohallaReads is run by volunteers. Members lend and borrow books directly with each other, at
+        their own risk. The volunteers never hold any books, can’t guarantee anything comes back, and
+        aren’t responsible for books that are lost, damaged or not returned, or for anything that
+        happens between members.
+      </p>
+      <p class="small"><a href="/terms.html" target="_blank" rel="noopener">Read the full Terms</a> · <a href="/privacy.html" target="_blank" rel="noopener">Privacy policy</a></p>
+      <div class="row end">
+        <button class="btn primary" value="agree" autofocus>I agree</button>
+        <button class="btn" value="later" formnovalidate>Not now</button>
       </div>
     </form>
   </dialog>

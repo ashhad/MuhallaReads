@@ -39,7 +39,7 @@ test('chat and request notes are relayed as quotes, without formatting', async (
   w.transport.clear();
   const r = await w.library.want(w.member(BILAL), added[0].id, 'hi\n\n*Library notice*: pay at evil.example');
   assert.match(w.transport.to(AYESHA)[0].text, /💬 "hi Library notice: pay at evil\.example"/);
-  await w.library.decide(w.member(AYESHA), r.id, true);
+  await w.library.decide(w.member(AYESHA), r.id, true, { understood: true });
   w.transport.clear();
   await w.library.sendMessage(w.member(BILAL), r.id, 'line one\n*fake bold*');
   assert.match(w.transport.to(AYESHA)[0].text, /\n> line one\n> fake bold\n/);
@@ -68,6 +68,7 @@ test('a huge search query is cut short and stays fast', async () => {
 test('approval never switches itself off when the admin is missing', async () => {
   const w = makeWorld({ settings: { adminPhones: [AYESHA] } }); // Ayesha is the admin but hasn't joined
   await w.say(RIYA, 'hi', { profileName: 'Riya' });
+  await w.say(RIYA, 'I agree');
   await w.say(RIYA, 'skip');
   assert.match(await w.say(RIYA, 'Bani Park'), /once an admin approves you/);
   assert.equal(w.member(RIYA).status, 'pending');
@@ -95,6 +96,7 @@ test("ADMIN_PHONES works with or without the country code; number settings don't
 test('an old Approve button cannot approve the next person given the same number', async () => {
   const w = await world();
   await w.say(RIYA, 'hi', { profileName: 'Riya' });
+  await w.say(RIYA, 'I agree');
   await w.say(RIYA, 'skip');
   w.transport.clear();
   await w.say(RIYA, 'Bani Park');
@@ -102,6 +104,7 @@ test('an old Approve button cannot approve the next person given the same number
   await w.say(AYESHA, `decline ${oldRef}`);
 
   await w.say(MALLORY, 'hi', { profileName: 'Mallory' });
+  await w.say(MALLORY, 'I agree');
   await w.say(MALLORY, 'skip');
   await w.say(MALLORY, 'Bani Park');
   assert.equal(w.member(MALLORY).id, Number(oldRef.split('-')[0])); // the number was reused
@@ -113,14 +116,14 @@ test('blocking stops "share my number", and sharing twice sends one message', as
   const w = await world();
   const { added } = await w.library.addBooks(w.member(AYESHA), [{ title: 'Dune' }]);
   const r = await w.library.want(w.member(BILAL), added[0].id);
-  await w.library.decide(w.member(AYESHA), r.id, true);
+  await w.library.decide(w.member(AYESHA), r.id, true, { understood: true });
   w.transport.clear();
   await w.library.shareNumber(w.member(BILAL), r.id);
   await w.library.shareNumber(w.member(BILAL), r.id);
   assert.equal(w.transport.to(AYESHA).filter((s) => /shared their number/.test(s.text)).length, 1);
 
   const r2 = await w.library.want(w.member(AYESHA), (await w.library.addBooks(w.member(BILAL), [{ title: 'Ikigai' }])).added[0].id);
-  await w.library.decide(w.member(BILAL), r2.id, true);
+  await w.library.decide(w.member(BILAL), r2.id, true, { understood: true });
   w.library.block(w.member(BILAL), r.id);
   await assert.rejects(w.library.shareNumber(w.member(AYESHA), r2.id), /can't share/);
 });

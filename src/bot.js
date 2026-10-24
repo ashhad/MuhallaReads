@@ -3,7 +3,7 @@
 // gets a button that signs the member in there.
 // Members only ever see each other's display names. Phone numbers stay on the server.
 import fs from 'node:fs';
-import { who, LibraryError, approvalTag } from './library.js';
+import { who, LibraryError, approvalTag, listLoans } from './library.js';
 import { placeOf } from './db.js';
 
 const MAX_MESSAGE = 3900; // WhatsApp's limit is 4096 characters
@@ -44,6 +44,9 @@ const ASK_BUILDING =
   'Only this and your locality are shown next to your name, never your flat number or address.';
 const ASK_LOCALITY = '📍 And your *locality or area*? e.g. _Saket_';
 const SKIP = [{ id: 'skip', title: 'Skip' }];
+const AGREE_BUTTON = [{ id: 'agree', title: 'I agree' }];
+const AGREES = /^(i\s*agree|agree|i\s*accept|accept|yes|ok|okay)\W*$/i;
+const DISAGREES = /^(no|nope|i\s*disagree|disagree|i\s*don'?t\s*agree)\W*$/i;
 
 const clip = (s) => (s.length > MAX_MESSAGE ? s.slice(0, MAX_MESSAGE - 20) + '\n…(more not shown)' : s);
 
@@ -72,15 +75,42 @@ export function createBot({ store, library, notifier, settings }) {
     return reply(`${intro}\n\nTap below to open it (the button works once, for 15 minutes; send *login* for a new one).`, { link });
   }
 
-  /** First-time setup: building, then locality. At least one is required. */
+  /** The ground rules a newcomer agrees to before joining (the full Terms are on the website). */
+  const termsText = () =>
+    [
+      '📜 *Before you join*',
+      'Members lend and borrow books directly with each other, at their own risk. The volunteers who run ' +
+        `${settings.communityName} never hold any books, can't guarantee anything comes back, and aren't ` +
+        'responsible for books that are lost, damaged or not returned, or for anything that happens between members.',
+      ...(settings.publicUrl ? ['', `Terms: ${settings.publicUrl}/terms.html`] : []),
+      '',
+      'Tap *I agree* to continue.',
+    ].join('\n');
+
+  /** First-time setup: agreeing to the Terms, then building, then locality (at least one of those). */
   async function setup(member, text, reply, { payload } = {}) {
+    if (!member.terms_at) {
+      if (AGREES.test(text)) {
+        store.acceptTerms(member.id);
+        setupStep.set(member.id, 'building');
+        return reply(`👍 Thanks!\n\n${ASK_BUILDING}`, { buttons: SKIP });
+      }
+      if (DISAGREES.test(text) && !placeOf(member) && !store.booksOf(member.id).length) {
+        // Someone brand new who doesn't want to join: keep nothing about them.
+        setupStep.delete(member.id);
+        store.deleteMember(member.id);
+        return reply("No problem, you haven't joined and nothing about you was kept. You're welcome back any time.");
+      }
+      setupStep.set(member.id, 'terms');
+      return reply(termsText(), { buttons: AGREE_BUTTON });
+    }
     const step = setupStep.get(member.id);
     const skip = /^skip$/i.test(text);
     if (step && !skip && (payload || commands.some(([re]) => re.test(text)))) {
       // e.g. a button from an older message, or "login": finish setup first
       return reply(`Let's finish setting you up first.\n\n${step === 'building' ? ASK_BUILDING : ASK_LOCALITY}`, { buttons: SKIP });
     }
-    if (!step) {
+    if (!step || step === 'terms') {
       setupStep.set(member.id, 'building');
       return reply(ASK_BUILDING, { buttons: SKIP });
     }
@@ -212,6 +242,12 @@ export function createBot({ store, library, notifier, settings }) {
     [
       /^(delete me|delete my account|delete account)$/i,
       (m, _, reply) => {
+        try {
+          library.canDeleteAccount(m);
+        } catch (err) {
+          if (err instanceof LibraryError) return reply(err.message);
+          throw err;
+        }
         confirmingDelete.add(m.id);
         return reply(
           '⚠️ This removes your account, your books and all your requests and messages. It can\'t be undone.\n' +
@@ -223,7 +259,12 @@ export function createBot({ store, library, notifier, settings }) {
       /^delete everything$/i,
       (m, _, reply) => {
         if (!confirmingDelete.delete(m.id)) return reply('Send *delete me* first.');
-        library.deleteAccount(m);
+        try {
+          library.deleteAccount(m);
+        } catch (err) {
+          if (err instanceof LibraryError) return reply(err.message);
+          throw err;
+        }
         return reply('Your account and data have been deleted. Goodbye! 👋');
       },
     ],
@@ -278,8 +319,12 @@ export function createBot({ store, library, notifier, settings }) {
         if (!isAdmin(m)) return false;
         const target = store.memberById(Number(x[1]));
         if (!target) return reply('No such member.');
+        const holding = store.borrowedBy(target.id);
         store.deleteMember(target.id);
-        return reply(`Removed ${target.name} and their books.`);
+        return reply(
+          `Removed ${target.name} and their books.` +
+            (holding.length ? `\n⚠️ They still had ${listLoans(holding)}; those owners may want to follow up.` : ''),
+        );
       },
     ],
   ];
@@ -320,7 +365,7 @@ export function createBot({ store, library, notifier, settings }) {
       store.touchInbound(member.id);
       await reply(
         `🎉 Welcome, ${name}! Neighbours will see you as *${name}* (change it later with \`name …\`).\n` +
-          'Two quick questions so they have a rough idea where you are:',
+          'First, the ground rules. Then two quick questions so neighbours know roughly where you are.',
       );
       return setup(member, '', reply);
     }
