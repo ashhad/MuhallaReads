@@ -53,7 +53,8 @@ CREATE TABLE IF NOT EXISTS members (
   nudged_at       TEXT,                            -- last paid template, for "one per absence"
   terms_at        TEXT,                            -- when they agreed to the Terms (terms.html)
   terms_version   TEXT,                            -- which version (src/terms.js)
-  terms_via       TEXT                             -- where: 'whatsapp' or 'app'
+  terms_via       TEXT,                            -- where: 'whatsapp' or 'app'
+  card_sent_at    TEXT                             -- when the bot sent them its contact card to save
 );
 
 CREATE TABLE IF NOT EXISTS sessions (
@@ -192,6 +193,7 @@ function migrate(db) {
     terms_at: 'TEXT',
     terms_version: 'TEXT',
     terms_via: 'TEXT',
+    card_sent_at: 'TEXT',
   };
   const cols = new Set(db.prepare('PRAGMA table_info(members)').all().map((c) => c.name));
   for (const [col, type] of Object.entries(added)) {
@@ -425,6 +427,10 @@ export class Store {
   /** Records that a member agreed to the Terms: when, which version, and where. */
   acceptTerms(id, { via = 'app', version = TERMS_VERSION, at = now() } = {}) {
     this.q('UPDATE members SET terms_at = ?, terms_version = ?, terms_via = ? WHERE id = ?').run(at, version, via, id);
+  }
+
+  markCardSent(id, at = now()) {
+    this.q('UPDATE members SET card_sent_at = ? WHERE id = ?').run(at, id);
   }
 
   markNudged(id, at = now()) {

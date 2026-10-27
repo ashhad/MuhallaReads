@@ -12,7 +12,7 @@ import { agreedToTerms } from './terms.js';
 import { BADGES } from './badges.js';
 import { createNotifier } from './notifier.js';
 import { createPhotoLimits, PhotoLimitError } from './photos.js';
-import { createMetaTransport, whatsappRouter } from './whatsapp.js';
+import { createMetaTransport, whatsappRouter, libraryContact, vCard } from './whatsapp.js';
 import { securityHeaders, rateLimit, failureLimit, isAllowedCover } from './security.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -77,6 +77,15 @@ export function createApp({ store, deps = {}, settings = config } = {}) {
       maxRenewals: settings.maxRenewals ?? 2,
       badges: BADGES,
     });
+  });
+
+  // "Save the library's number": a contact card, so WhatsApp shows the library's name, not a bare number.
+  app.get('/library.vcf', (_req, res) => {
+    const contact = libraryContact(settings);
+    if (!contact) throw new HttpError(404, 'Not found');
+    const file = (contact.name.replace(/[^\w-]+/g, '') || 'library') + '.vcf';
+    res.set({ 'Content-Type': 'text/vcard; charset=utf-8', 'Content-Disposition': `attachment; filename="${file}"` });
+    res.send(vCard(contact));
   });
 
   // Sign-in links come from the WhatsApp bot ("login"), so the web app never asks for a phone number.

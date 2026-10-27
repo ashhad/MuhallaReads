@@ -171,6 +171,7 @@ async function boot() {
     }
     $('#bot-link').href = waLink(c.whatsappNumber, 'hi');
     $('#bot-link').hidden = false;
+    $('#save-contact').hidden = false;
   }
 
   // Sign-in links from the bot look like /#login=CODE

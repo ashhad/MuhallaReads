@@ -22,7 +22,10 @@ test('Cloud API webhook end to end: signature, setup, sign-in button and a paid 
     store,
     settings: {
       ...baseSettings,
-      whatsapp: { token: 'tok', phoneNumberId: '555', verifyToken: 'vt', appSecret: 'secret', graphVersion: 'v23.0', templateLang: 'en' },
+      whatsapp: {
+        token: 'tok', phoneNumberId: '555', verifyToken: 'vt', appSecret: 'secret', graphVersion: 'v23.0', templateLang: 'en',
+        displayNumber: '919900000000',
+      },
     },
     deps: { enrichAll: async (b) => b, identifyBooks: async () => ({ books: [], costUsd: 0 }), lookupIsbn: async () => null, searchBooks: async () => [] },
   });
@@ -80,10 +83,15 @@ test('Cloud API webhook end to end: signature, setup, sign-in button and a paid 
     const [building] = await chat(AYESHA, 'Ayesha', 'I agree', 1);
     assert.equal(building.body.interactive.action.buttons[0].reply.id, 'skip'); // building question with Skip
     await chat(AYESHA, 'Ayesha', 'Green Park Tower', 1);
-    const [done] = await chat(AYESHA, 'Ayesha', 'Saket', 1);
+    const [done, save, card] = await chat(AYESHA, 'Ayesha', 'Saket', 3);
     assert.equal(done.body.interactive.type, 'cta_url'); // "Open MohallaReads" button with a sign-in link
     assert.match(done.body.interactive.body.text, /All set/);
     assert.match(done.body.interactive.action.parameters.url, /^https:\/\/books\.example\.org\/#login=/);
+    // Then the library's contact card, so WhatsApp shows its name rather than its number.
+    assert.match(save.body.text.body, /Save \*Test Muhalla\* to your contacts/);
+    assert.equal(card.body.type, 'contacts');
+    assert.deepEqual(card.body.contacts[0].name, { formatted_name: 'Test Muhalla', first_name: 'Test Muhalla' });
+    assert.deepEqual(card.body.contacts[0].phones, [{ phone: '+919900000000', type: 'WORK', wa_id: '919900000000' }]);
     const [other] = await chat(AYESHA, 'Ayesha', 'add Dune by Frank Herbert', 1);
     assert.match(other.body.interactive.body.text, /happen in the app/);
 
@@ -94,7 +102,7 @@ test('Cloud API webhook end to end: signature, setup, sign-in button and a paid 
     await chat(BILAL, 'Bilal', 'hi', 2);
     await chat(BILAL, 'Bilal', 'I agree', 1);
     await chat(BILAL, 'Bilal', 'skip', 1);
-    await chat(BILAL, 'Bilal', 'Saket', 1);
+    await chat(BILAL, 'Bilal', 'Saket', 3);
     const before = sent.length;
     const r = await app.locals.library.want(store.memberByPhone(BILAL), added[0].id);
     const tpl = sent.slice(before).find((s) => s.body.type === 'template');

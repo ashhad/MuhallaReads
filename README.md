@@ -134,6 +134,10 @@ receive one verification SMS or call.
 7. Add a payment method in WhatsApp Manager (needed once paid templates start), and share the
    bot's number and community code in your community group.
 
+Until Meta approves the number's display name, WhatsApp shows members the bot's number instead of
+its name. The bot sends each member its contact card to save (`save` sends it again), and the app has
+a *Save contact* button. See [Troubleshooting](docs/deploy-oracle.md#troubleshooting).
+
 ## Settings
 
 See `.env.example` for all of them. The main ones:

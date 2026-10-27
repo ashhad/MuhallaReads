@@ -6,6 +6,7 @@ import fs from 'node:fs';
 import { who, LibraryError, approvalTag, listLoans } from './library.js';
 import { placeOf } from './db.js';
 import { agreedToTerms, TERMS_SUMMARY } from './terms.js';
+import { libraryContact } from './whatsapp.js';
 
 const MAX_MESSAGE = 3900; // WhatsApp's limit is 4096 characters
 
@@ -32,6 +33,7 @@ export function helpText(communityName, { admin = false, photos = false } = {}) 
     '👤 `name Ayesha` · 🏢 `building Green Park Tower` · 📍 `locality Saket`',
     '💌 `invite`: your link for inviting a neighbour (an admin approves everyone)',
     '🔔 `alerts off` / `alerts on`: messages when neighbours add new books',
+    '📇 `save`: the library\'s contact card, so our messages show our name instead of a number',
     '🔒 `logout everywhere`: sign out of the app on all devices (e.g. a lost phone)',
     '🗑️ `delete me`: delete your account and all your data',
     ...(admin ? ['', '🛠️ Admin: `pending` · `approve 12` · `decline 12` · `stats` · `members` · `remove member 12` · `security`'] : []),
@@ -63,6 +65,7 @@ export function createBot({ store, library, notifier, settings }) {
   const setupStep = new Map(); // member id -> 'building' | 'locality' while answering the setup questions
   const isAdminPhone = (phone) => Boolean(settings.adminPhones?.includes(phone));
   const isAdmin = (member) => isAdminPhone(member.phone) && member.status === 'active';
+  const card = libraryContact(settings);
 
   /** A one-time sign-in button for the web app (works once, for 15 minutes). */
   const signInLink = (member) =>
@@ -74,6 +77,20 @@ export function createBot({ store, library, notifier, settings }) {
     const link = signInLink(member);
     if (!link) return reply(`${intro}\n\nThe app's address isn't set up yet. Ask the admin.`);
     return reply(`${intro}\n\nTap below to open it (the button works once, for 15 minutes; send *login* for a new one).`, { link });
+  }
+
+  /**
+   * The library's contact card. WhatsApp shows the bot as a bare number until Meta approves its display
+   * name; a member who saves the card sees the name instead.
+   */
+  function sendCard(member, reply) {
+    if (!card) return reply("The library's number isn't set up yet. Ask the admin.");
+    store.markCardSent(member.id);
+    return reply(
+      `📇 Save *${card.name}* to your contacts, so our messages show our name instead of a number. ` +
+        'Tap the card below, then save it.',
+      { contact: card },
+    );
   }
 
   /** The ground rules a newcomer agrees to before joining (the full Terms are on the website). */
@@ -130,21 +147,23 @@ export function createBot({ store, library, notifier, settings }) {
     setupStep.delete(member.id);
     let me = store.memberById(member.id);
     if (me.status === 'pending' && (await library.askApproval(me)) === 'asked') {
-      return openAppReply(
+      await openAppReply(
         me,
         reply,
         `✅ Thanks, ${me.name}! Neighbours will see you as *${who(me)}* once an admin approves you. ` +
           "You'll get a message here, usually within a day.\n" +
           'Meanwhile you can look around the app and see which books are in the library.',
       );
+    } else {
+      me = store.memberById(member.id);
+      await openAppReply(
+        me,
+        reply,
+        `✅ All set! Neighbours will see you as *${who(me)}*.\n` +
+          'Find books, add yours and manage requests in the app. You\'ll get notifications here.',
+      );
     }
-    me = store.memberById(member.id);
-    return openAppReply(
-      me,
-      reply,
-      `✅ All set! Neighbours will see you as *${who(me)}*.\n` +
-        'Find books, add yours and manage requests in the app. You\'ll get notifications here.',
-    );
+    if (card) await sendCard(me, reply);
   }
 
   /** Changes building or locality later, keeping at least one of them. */
@@ -163,6 +182,7 @@ export function createBot({ store, library, notifier, settings }) {
     [/^(help|menu|\?)\W*$/i, (m, _, reply) => reply(helpText(settings.communityName, { admin: isAdmin(m), photos: Boolean(settings.anthropicApiKey) }))],
     [/^join\b/i, (m, _, reply) => openAppReply(m, reply, `You're already a member, ${m.name}! 🙂`)],
     [/^(login|log in|sign in|website|web|link|app|open)$/i, (m, _, reply) => openAppReply(m, reply, '🌐 Here\'s your sign-in link.')],
+    [/^(save|save contact|save number|contact|contact card)$/i, (m, _, reply) => sendCard(m, reply)],
     [
       /^name\s+([\s\S]+)$/i,
       (m, x, reply) => {
@@ -331,7 +351,7 @@ export function createBot({ store, library, notifier, settings }) {
   /**
    * Handles one incoming message.
    * @param {{phone: string, profileName?: string, text?: string, payload?: string, other?: string}} msg
-   * @param {(text: string, opts?: {buttons?: {id: string, title: string}[], link?: {url: string, label: string}}) => Promise<unknown>} send
+   * @param {(text: string, opts?: {buttons?: {id: string, title: string}[], link?: {url: string, label: string}, contact?: object}) => Promise<unknown>} send
    */
   async function handle(msg, send) {
     const reply = async (text, opts) => {
@@ -375,6 +395,14 @@ export function createBot({ store, library, notifier, settings }) {
     // Setup isn't finished until there's a building or locality.
     if (setupStep.has(member.id) || !placeOf(member)) return setup(member, text, reply, msg);
 
+    await respond(member, text, msg, reply);
+    // Members who joined before the bot sent its contact card get it once, the next time they message.
+    const me = store.memberById(member.id);
+    if (card && me && !me.card_sent_at && !confirmingDelete.has(me.id)) await sendCard(me, reply);
+  }
+
+  /** Replies to a message from a member who has finished setting up. */
+  async function respond(member, text, msg, reply) {
     // Messaging the bot delivers any notifications that were waiting, plus news of books added meanwhile.
     const delivered = await notifier.flush(member);
     const caughtUp = !/^alerts?\b/i.test(text) && (await library.newsSummary(member, reply));

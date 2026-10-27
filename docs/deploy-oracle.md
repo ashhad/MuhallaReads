@@ -229,3 +229,23 @@ what to do about an alert. `sudo muhallareads-soc` shows its status.
 | "Something went wrong" in the app | `journalctl -u muhallareads -n 50` |
 | Setup fails during `npm ci` on the Micro VM | Run the script again: it adds swap memory first, which usually fixes it |
 | Camera doesn't open | The app must be opened over `https://`, and the browser must be allowed to use the camera |
+| WhatsApp shows the bot's number, not its name | See below |
+
+### The bot shows up as a number, not "MohallaReads"
+
+WhatsApp shows a business number's name only after Meta approves its **display name**, and in
+practice Meta also wants a verified business and a raised messaging limit first. Until then, members
+see the bare number unless they've saved it as a contact. So the bot sends every member its contact
+card once (newcomers when they finish joining, existing members the next time they message it),
+`save` sends it again, and the app's *Me* tab has a **Save contact** button (`/library.vcf`).
+
+To check the display name's status, run this on the VM (it reads the token from the settings file,
+so it never appears on screen or in your shell history):
+
+```bash
+sudo bash -c 'E=/etc/muhallareads/muhallareads.env; T=$(grep ^WHATSAPP_TOKEN= $E | cut -d= -f2-); P=$(grep ^WHATSAPP_PHONE_NUMBER_ID= $E | cut -d= -f2-); curl -s "https://graph.facebook.com/v23.0/$P?fields=verified_name,name_status,new_name_status,quality_rating" -H "Authorization: Bearer $T"; echo'
+```
+
+`name_status` should become `APPROVED`. If it's `DECLINED` or `NONE`, set or edit the display name in
+WhatsApp Manager → *Phone numbers*. Starting **Business verification** (Meta Business Suite →
+*Settings → Security centre*) is what usually unlocks it.

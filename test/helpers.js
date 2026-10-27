@@ -30,9 +30,9 @@ export function fakeTransport() {
   const sent = [];
   return {
     sent,
-    async send(to, { text, buttons, link }) {
+    async send(to, { text, buttons, link, contact }) {
       const id = `wamid.${++n}`;
-      sent.push({ id, to, kind: 'text', text, buttons, link });
+      sent.push({ id, to, kind: 'text', text, buttons, link, contact });
       return id;
     },
     async sendTemplate(to, t) {
@@ -66,6 +66,7 @@ export function makeWorld({ settings = {} } = {}) {
       let r = t;
       if (opts.buttons) r += `\n[${opts.buttons.map((b) => `${b.title}=${b.id}`).join(' | ')}]`;
       if (opts.link) r += `\n<${opts.link.label}: ${opts.link.url}>`;
+      if (opts.contact) r += `\n[card: ${opts.contact.name} +${opts.contact.phone}]`;
       replies.push(r);
     });
     return replies.join('\n---\n');

@@ -16,6 +16,32 @@ const safeEqual = (a, b) => {
 const templateParam = (s) =>
   String(s ?? '').replace(/[\n\r\t]+/g, ' ').replace(/ {2,}/g, ' ').trim().slice(0, 300) || '-';
 
+/**
+ * The library's own contact: its name and WhatsApp number, or null when the number isn't configured.
+ * Until Meta approves the number's display name, WhatsApp shows members the bare number; once they
+ * save this contact, it shows the name instead.
+ */
+export function libraryContact(settings) {
+  const phone = settings.whatsapp?.displayNumber;
+  return phone ? { name: settings.communityName, phone, url: settings.publicUrl || '' } : null;
+}
+
+/** The same contact as a vCard file, for the website ("Save the library's number"). */
+export function vCard({ name, phone, url }) {
+  const esc = (s) => String(s).replace(/[\\,;]/g, (c) => `\\${c}`).replace(/\r?\n/g, ' ');
+  return [
+    'BEGIN:VCARD',
+    'VERSION:3.0',
+    `FN:${esc(name)}`,
+    `N:;${esc(name)};;;`,
+    `ORG:${esc(name)}`,
+    `TEL;TYPE=CELL;waid=${phone}:+${phone}`, // waid: WhatsApp's own field, so it links to the chat
+    ...(url ? [`URL:${url}`] : []),
+    'END:VCARD',
+    '',
+  ].join('\r\n');
+}
+
 export function createMetaTransport({ token, phoneNumberId, graphVersion, templateLang }) {
   const graph = (p) => `https://graph.facebook.com/${graphVersion}/${p}`;
   const auth = { Authorization: `Bearer ${token}` };
@@ -38,10 +64,27 @@ export function createMetaTransport({ token, phoneNumberId, graphVersion, templa
 
   /**
    * Sends a normal message (only allowed within 24h of the member's last message). Returns its id.
-   * `buttons` are reply buttons (max 3); `link` is a single button that opens a web page.
+   * `buttons` are reply buttons (max 3); `link` is a single button that opens a web page; `contact`
+   * (see libraryContact) follows the text as a contact card the member can save.
    */
-  async function send(to, { text, buttons, link }) {
+  async function send(to, { text, buttons, link, contact }) {
     let interactive;
+    if (contact) {
+      const id = text ? await post({ to, type: 'text', text: { body: text, preview_url: false } }) : undefined;
+      const card = await post({
+        to,
+        type: 'contacts',
+        contacts: [
+          {
+            name: { formatted_name: contact.name, first_name: contact.name },
+            org: { company: contact.name },
+            phones: [{ phone: `+${contact.phone}`, type: 'WORK', wa_id: contact.phone }],
+            ...(contact.url ? { urls: [{ url: contact.url, type: 'WORK' }] } : {}),
+          },
+        ],
+      });
+      return id ?? card;
+    }
     if (link) {
       interactive = (body) => ({
         type: 'cta_url',
