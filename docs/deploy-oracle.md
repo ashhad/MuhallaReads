@@ -138,6 +138,7 @@ sudo muhallareads-login 9812345678 "Your name"
 |---|---|
 | Update to the latest code | `cd ~/MuhallaReads && git pull && sudo bash deploy/oracle/setup.sh` |
 | Website sign-in link without WhatsApp | `sudo muhallareads-login 9812345678 "Name"` |
+| Clear every request and loan (e.g. after testing) | `sudo muhallareads-reset-requests` shows what it would clear; add `--yes` to do it (a copy is saved first) |
 | See what the app is doing | `journalctl -u muhallareads -f` (Ctrl+C to stop) |
 | Restart | `sudo systemctl restart muhallareads` |
 | List backups | `ls /var/backups/muhallareads` |

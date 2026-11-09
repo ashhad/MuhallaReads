@@ -29,6 +29,11 @@ const REQUESTS_TABLE = `CREATE TABLE IF NOT EXISTS requests (
   settled_at      TEXT      -- a lost book was replaced or paid for (the owner says so)
 );`;
 
+// Books that are out because of a loan or were marked lost. (An owner can also mark a book lent
+// without a request, for a loan arranged outside the app; that one stays as it is on a reset.)
+const BACK_ON_SHELF =
+  "lost_at IS NOT NULL OR id IN (SELECT book_id FROM requests WHERE status IN ('accepted', 'lost'))";
+
 // Members' phone numbers are stored only so the WhatsApp bot can message them. They are never
 // returned by any query used to show data to other members.
 const SCHEMA = `
@@ -840,6 +845,39 @@ export class Store {
 
   setMeta(key, value) {
     this.q('INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value').run(key, value);
+  }
+
+  /** What resetRequests would clear. */
+  requestCounts() {
+    const counts = this.q(
+      `SELECT (SELECT COUNT(*) FROM requests) AS requests,
+              (SELECT COUNT(*) FROM requests WHERE status = 'pending') AS pending,
+              (SELECT COUNT(*) FROM requests WHERE status = 'accepted') AS lent,
+              (SELECT COUNT(*) FROM requests WHERE status = 'lost') AS lost,
+              (SELECT COUNT(*) FROM messages) AS messages,
+              (SELECT COUNT(*) FROM holds) AS holds,
+              (SELECT COUNT(*) FROM books WHERE ${BACK_ON_SHELF}) AS books`,
+    ).get();
+    return { ...counts };
+  }
+
+  /**
+   * Starts lending afresh: deletes every request and loan, whatever its status, with its chat and
+   * waiting notifications, empties every queue, and puts books lent or lost through the app back on
+   * the shelf. Members, books and wishlists stay. Returns what was cleared (see scripts/reset-requests.js).
+   */
+  resetRequests() {
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      const counts = this.requestCounts();
+      this.db.exec(`UPDATE books SET status = 'available', lost_at = NULL WHERE ${BACK_ON_SHELF}`);
+      this.db.exec('DELETE FROM holds; DELETE FROM requests;'); // chats and notifications go with them
+      this.db.exec('COMMIT');
+      return counts;
+    } catch (err) {
+      this.db.exec('ROLLBACK');
+      throw err;
+    }
   }
 
   stats() {

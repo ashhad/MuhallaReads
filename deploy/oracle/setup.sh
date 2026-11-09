@@ -303,6 +303,14 @@ exec systemd-run --quiet --pipe --wait -p User=muhallareads -p EnvironmentFile=/
 HELPER
 chmod 755 /usr/local/bin/muhallareads-login
 
+# Admin helper: sudo muhallareads-reset-requests [--yes]  → clear every request and loan (shows counts first)
+cat > /usr/local/bin/muhallareads-reset-requests <<'HELPER'
+#!/bin/sh
+exec systemd-run --quiet --pipe --wait -p User=muhallareads -p EnvironmentFile=/etc/muhallareads/muhallareads.env \
+  -p WorkingDirectory=/opt/muhallareads /usr/bin/node --disable-warning=ExperimentalWarning scripts/reset-requests.js "$@"
+HELPER
+chmod 755 /usr/local/bin/muhallareads-reset-requests
+
 for _ in $(seq 1 20); do
   curl -fs "http://127.0.0.1:$PORT/api/config" >/dev/null && break
   sleep 1

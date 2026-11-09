@@ -189,3 +189,36 @@ test("upgrading an older database allows 'lost' and keeps every loan, message an
   assert.equal(s.db.prepare('PRAGMA foreign_key_check').all().length, 0);
   s.db.close();
 });
+
+test('a reset clears every request, loan, chat and queue, and puts lent and lost books back', async () => {
+  const w = await world();
+  const lost = await lend(w, BILAL, 'Dune');
+  w.time.now += 52 * DAY;
+  await w.library.markLost(w.member(AYESHA), lost.id);
+  const loan = await lend(w, CHAND, 'Ikigai'); // lent out now, with Riya waiting and a chat going
+  await w.library.joinQueue(w.member(RIYA), loan.book_id);
+  await w.library.sendMessage(w.member(AYESHA), loan.id, 'Enjoy it!');
+  w.closeWindow(CHAND); // so the next notice to Chand waits in the inbox
+  const { added } = await w.library.addBooks(w.member(AYESHA), [{ title: 'Sapiens' }, { title: 'Lent outside the app' }]);
+  await w.library.want(w.member(RIYA), added[0].id); // waiting for an answer
+  w.store.setStatus(w.member(AYESHA).id, added[1].id, 'lent');
+  await w.library.sendMessage(w.member(AYESHA), loan.id, 'Due soon');
+  w.library.addWish(w.member(RIYA), 'Atomic Habits');
+  assert.ok(w.store.pendingInbox(w.member(CHAND).id).length);
+
+  const before = w.store.requestCounts();
+  assert.deepEqual(w.store.resetRequests(), before);
+  assert.deepEqual(before, { requests: 3, pending: 1, lent: 1, lost: 1, messages: 2, holds: 1, books: 2 });
+  assert.deepEqual(w.store.requestCounts(), { requests: 0, pending: 0, lent: 0, lost: 0, messages: 0, holds: 0, books: 0 });
+
+  for (const id of [lost.book_id, loan.book_id]) {
+    assert.equal(w.store.bookById(id).status, 'available');
+    assert.equal(w.store.bookById(id).lost_at, null);
+  }
+  assert.equal(w.store.search('dune').length, 1); // no longer hidden as lost
+  assert.equal(w.store.bookById(added[1].id).status, 'lent'); // the owner's own note stays
+  assert.equal(w.store.pendingInbox(w.member(CHAND).id).length, 0);
+  assert.equal(w.store.wishesOf(w.member(RIYA).id).length, 1);
+  assert.equal(w.store.memberRecord(w.member(BILAL).id).lost, 0);
+  assert.equal((await w.library.want(w.member(BILAL), loan.book_id)).status, 'pending'); // free to borrow again
+});
